@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.antirez.ds4-server</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>__DS4_REPO__/ds4-server</string>
+		<string>-m</string>
+		<string>__DS4_REPO__/ds4flash.gguf</string>
+		<string>--port</string>
+		<string>__DS4_PORT__</string>
+		<string>--ctx</string>
+		<string>__DS4_CTX__</string>
+		<string>--kv-disk-dir</string>
+		<string>__DS4_KV_DIR__</string>
+		<string>--kv-disk-space-mb</string>
+		<string>__DS4_KV_MB__</string>
+	</array>
+	<key>WorkingDirectory</key>
+	<string>__DS4_REPO__</string>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PATH</key>
+		<string>/opt/homebrew/bin:/opt/homebrew/sbin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+	</dict>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>StandardOutPath</key>
+	<string>__HOME__/Library/Logs/ds4-server.log</string>
+	<key>StandardErrorPath</key>
+	<string>__HOME__/Library/Logs/ds4-server.log</string>
+</dict>
+</plist>
