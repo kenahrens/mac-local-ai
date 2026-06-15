@@ -1,0 +1,1003 @@
+#!/usr/bin/env bash
+# short — long video → TikTok-style YouTube Shorts
+#
+# Usage:
+#   short <directory>              auto-discover files in the dir
+#   short <video.mp4> [--clips N]  flat video mode (no vertical stacking)
+#
+# Directory layout (drop these in a dated folder):
+#   *.zip                          Tella raw export (Camera.mp4 + Screen.mp4)
+#   *.mp4                          or a flat video (landscape, used as-is)
+#
+# Pipeline:
+#   1. Extract layers from Tella zip (if present)
+#   2. Transcribe full video with word-level timing (Whisper large-v3)
+#   3. AI picks 2x candidate clips from transcript (oMLX Qwen)
+#   4. AI judges each candidate on hook/start/end/standalone/value/completeness
+#      (oMLX Gemma — cheap, transcript-only, no CPU rendering)
+#   5. Top N clips → extract, re-transcribe, vision-guided crop, stack vertical, burn captions
+#      Vision: sample frames → AI determines content center → smart crop positioning
+#
+# Output: clip_01.mp4, clip_02.mp4, ... (1080x1920 vertical)
+#
+# Deps: ffmpeg (with libass), whisper, curl, jq, unzip
+
+set -euo pipefail
+
+OMLX_URL="${OMLX_URL:-http://127.0.0.1:38010/v1}"
+OMLX_MODEL="${OMLX_MODEL:-Qwen3.6-27B-4bit}"
+NUM_CLIPS="${NUM_CLIPS:-3}"
+# Whisper model for the single transcription pass. large-v3 punctuates far more
+# reliably than turbo; sentence-ending punctuation (.!?) is what the boundary
+# detector keys on to mark valid clip START points, so accurate punctuation
+# directly improves clip start/end selection (and the burned word-level captions,
+# which read from the same JSON). Override with WHISPER_MODEL for a faster model.
+WHISPER_MODEL="${WHISPER_MODEL:-mlx-community/whisper-large-v3-mlx}"
+# Aspect ratio (W:H) of the top face band. The face source is ~square, so the
+# band shape decides how big the face reads: a 1:1 band shows the whole face,
+# big and tall; a wide band (16:9) makes the face short. The face is scaled to
+# FILL this band (cover + center crop), and the screen below takes the rest.
+# Set CAM_H directly (px) to override the band height instead.
+FACE_AR="${FACE_AR:-4:3}"
+CAM_H="${CAM_H:-$(python3 -c "w,h='${FACE_AR}'.split(':'); print(int(round(1080*float(h)/float(w))))")}"
+CAM_H=$(( CAM_H - CAM_H % 2 ))      # keep even for ffmpeg
+SCR_BAND_H=$((1920 - CAM_H))
+
+# ── Parse args ────────────────────────────────────────────────────────────────
+INPUT=""
+OUTPUT_DIR=""
+
+DRY_RUN=false
+# Manual clips: a JSON file [{"start","end","title"}] to render instead of the
+# AI's auto-selected clips — full control over boundaries so clips don't cut off
+# mid-sentence. Times may be MM:SS.ss or HH:MM:SS.ss.
+CLIPS_FILE="${CLIPS_FILE:-}"
+CAPTION_STYLE="${CAPTION_STYLE:-yellow}"
+# Screen band fit mode (Tella layered mode only):
+#   fit   — scale the WHOLE screen to 1080 wide, letterbox to fill the band.
+#           Nothing is cropped, so side-by-side terminals stay intact. (default)
+#   cover — fill the band height and crop 1080 wide at a vision-guided X offset.
+#           Bigger text, but loses the edges of wide / split-screen recordings.
+SCREEN_FIT="${SCREEN_FIT:-fit}"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --clips) NUM_CLIPS="$2"; shift 2 ;;
+    --clips-file) CLIPS_FILE="$2"; shift 2 ;;
+    --dry-run) DRY_RUN=true; shift ;;
+    --style) CAPTION_STYLE="$2"; shift 2 ;;
+    --screen) SCREEN_FIT="$2"; shift 2 ;;
+    *)
+      if [[ -z "$INPUT" ]]; then
+        INPUT="$1"
+      else
+        OUTPUT_DIR="$1"
+      fi
+      shift ;;
+  esac
+done
+
+if [[ -z "$INPUT" ]]; then
+  echo "Usage: short <directory> [--clips N]"
+  echo ""
+  echo "Drop a Tella zip (raw export) or an .mp4 in a directory and point short at it."
+  echo ""
+  echo "Options:"
+  echo "  --clips N     Number of clips to extract (default: 3)"
+  echo "  --dry-run     Transcribe + select + judge only, skip video rendering"
+  echo "  --style NAME  Caption style: yellow (default), pink"
+  echo "  --screen MODE Screen band: fit (default, full width, no crop) or cover (crop)"
+  echo ""
+  echo "Env: OMLX_URL, OMLX_MODEL, WHISPER_MODEL, NUM_CLIPS, CAPTION_STYLE, SCREEN_FIT"
+  exit 1
+fi
+
+# ── Directory mode ───────────────────────────────────────────────────────────
+CAMERA=""
+SCREEN=""
+FLAT_VIDEO=""
+HAS_LAYERS=false
+
+if [[ -d "$INPUT" ]]; then
+  DIR="$INPUT"
+  OUTPUT_DIR="$DIR"
+
+  # Check for Tella zip first
+  ZIP=$(find "$DIR" -maxdepth 1 -name "*.zip" | head -1)
+  if [[ -n "$ZIP" ]]; then
+    echo "Found zip: $(basename "$ZIP")"
+    echo "Extracting Tella layers..."
+    RAW_DIR="$DIR/raw"
+    mkdir -p "$RAW_DIR"
+    unzip -o "$ZIP" -d "$RAW_DIR" >/dev/null 2>&1
+
+    # Find Camera.mp4 and Screen.mp4 (Tella puts them in a "Clip N/" subfolder)
+    CAMERA=$(find "$RAW_DIR" -name "Camera.mp4" | head -1)
+    SCREEN=$(find "$RAW_DIR" -name "Screen.mp4" | head -1)
+
+    if [[ -n "$CAMERA" && -n "$SCREEN" ]]; then
+      HAS_LAYERS=true
+      echo "  Camera: $(basename "$CAMERA")"
+      echo "  Screen: $(basename "$SCREEN")"
+    else
+      echo "  Warning: zip didn't contain Camera.mp4 + Screen.mp4"
+    fi
+    echo ""
+  fi
+
+  # Check for pre-extracted layers
+  if [[ "$HAS_LAYERS" == false ]]; then
+    CAMERA=$(find "$DIR" -maxdepth 2 -name "Camera.mp4" | head -1)
+    SCREEN=$(find "$DIR" -maxdepth 2 -name "Screen.mp4" | head -1)
+    if [[ -n "$CAMERA" && -n "$SCREEN" ]]; then
+      HAS_LAYERS=true
+      echo "Found layers:"
+      echo "  Camera: $CAMERA"
+      echo "  Screen: $SCREEN"
+      echo ""
+    fi
+  fi
+
+  # Fall back to flat video
+  if [[ "$HAS_LAYERS" == false ]]; then
+    FLAT_VIDEO=$(find "$DIR" -maxdepth 1 -name "*.mp4" ! -name "clip_*" ! -name "*_cut.mp4" ! -name "*_short.mp4" | head -1)
+    if [[ -z "$FLAT_VIDEO" ]]; then
+      echo "No .zip, Camera+Screen layers, or .mp4 found in $DIR"
+      exit 1
+    fi
+    echo "Found video: $(basename "$FLAT_VIDEO") (flat, no vertical stacking)"
+    echo ""
+  fi
+elif [[ -f "$INPUT" ]]; then
+  FLAT_VIDEO="$INPUT"
+  OUTPUT_DIR="${OUTPUT_DIR:-$(dirname "$INPUT")}"
+  echo "Using flat video: $(basename "$FLAT_VIDEO")"
+  echo ""
+else
+  echo "Not found: $INPUT"
+  exit 1
+fi
+
+# The "primary" video for audio is Camera (has mic audio) or the flat video
+PRIMARY="${CAMERA:-$FLAT_VIDEO}"
+
+# ── Dep check ────────────────────────────────────────────────────────────────
+REQUIRED_CMDS=(ffmpeg mlx_whisper curl jq)
+for cmd in "${REQUIRED_CMDS[@]}"; do
+  if ! command -v "$cmd" &>/dev/null; then
+    echo "Missing: $cmd"
+    [[ "$cmd" == "mlx_whisper" ]] && echo "  pipx install mlx-whisper"
+    [[ "$cmd" == "ffmpeg" ]]      && echo "  brew tap homebrew-ffmpeg/ffmpeg && brew install homebrew-ffmpeg/ffmpeg/ffmpeg"
+    [[ "$cmd" == "jq" ]]          && echo "  brew install jq"
+    exit 1
+  fi
+done
+
+if ! curl -sf "$OMLX_URL/models" >/dev/null 2>&1; then
+  echo "AI endpoint not reachable at $OMLX_URL"
+  echo "Start oMLX or set OMLX_URL to your local AI endpoint"
+  exit 1
+fi
+
+WORKDIR="$OUTPUT_DIR"
+mkdir -p "$WORKDIR"
+
+TMPDIR=$(mktemp -d)
+trap 'rm -rf "$TMPDIR"' EXIT
+
+# ── Caption generator (word-by-word TikTok highlighting) ────────────────────
+cat << 'PYEOF' > "$TMPDIR/gen_captions.py"
+import json, sys
+
+json_file = sys.argv[1]
+ass_file = sys.argv[2]
+srt_file = sys.argv[3]
+alignment = int(sys.argv[4]) if len(sys.argv) > 4 else 8
+margin_v = int(sys.argv[5]) if len(sys.argv) > 5 else 610
+style_name = sys.argv[6] if len(sys.argv) > 6 else 'yellow'
+
+with open(json_file) as f:
+    data = json.load(f)
+
+words = []
+for seg in data.get('segments', []):
+    for w in seg.get('words', []):
+        text = w.get('word', '').strip()
+        if text and 'start' in w and 'end' in w:
+            words.append({'word': text, 'start': w['start'], 'end': w['end']})
+
+if not words:
+    open(ass_file, 'w').close()
+    open(srt_file, 'w').close()
+    sys.exit(0)
+
+# Brand dictionary — Whisper mis-hears product names (often split into two
+# words, or with a trailing period like "Scale." / "proximock."). Defaults
+# below; extend with your own terms via an external JSON object {"misheard":
+# "Correct"} at $SHORT_DICT or ~/.config/short/brands.json. External entries
+# override and extend the defaults.
+import os, re
+
+DEFAULT_BRAND_FIXES = {
+    # Common terms Whisper mishears. Extend via ~/.config/short/brands.json.
+    'kubernetes': 'Kubernetes', 'kuber netes': 'Kubernetes',
+    'github': 'GitHub', 'git hub': 'GitHub',
+    'postgres': 'Postgres', 'postgresql': 'PostgreSQL',
+}
+
+def _load_brand_fixes():
+    fixes = dict(DEFAULT_BRAND_FIXES)
+    for p in (os.environ.get('SHORT_DICT'), os.path.expanduser('~/.config/short/brands.json')):
+        if p and os.path.isfile(p):
+            try:
+                with open(p) as fh:
+                    ext = json.load(fh)
+                if isinstance(ext, dict):
+                    fixes.update({str(k): str(v) for k, v in ext.items()})
+                    sys.stderr.write('[short] loaded %d brand terms from %s\n' % (len(ext), p))
+            except Exception as e:
+                sys.stderr.write('[short] skipping unreadable dictionary %s: %s\n' % (p, e))
+    return fixes
+
+BRAND_FIXES = _load_brand_fixes()
+
+def _core(w):
+    # punctuation/space-stripped, lowercased form used for matching
+    return re.sub(r'[^a-z0-9]', '', w.lower())
+
+def _trailing(w):
+    # trailing punctuation to re-attach after replacement (e.g. the "." in "Scale.")
+    m = re.search(r'[^A-Za-z0-9]+$', w)
+    return m.group(0) if m else ''
+
+# Pre-split the dictionary into single-word and adjacent-pair lookups, keyed by
+# their punctuation-stripped form so sentence-boundary periods don't defeat it.
+_SINGLE_FIX = {}
+_PAIR_FIX = {}
+for _k, _v in BRAND_FIXES.items():
+    if ' ' in _k.strip():
+        _PAIR_FIX[_core(_k)] = _v
+    else:
+        _SINGLE_FIX[_core(_k)] = _v
+
+def fix_brands(word_list):
+    """Fix brand spelling, tolerant of surrounding punctuation. Tries an
+    adjacent word pair first ('Speed' + 'Scale.'), then a single word."""
+    i = 0
+    fixed = []
+    while i < len(word_list):
+        w0 = word_list[i]['word']
+        if i + 1 < len(word_list):
+            w1 = word_list[i+1]['word']
+            pkey = _core(w0) + _core(w1)
+            if pkey and pkey in _PAIR_FIX:
+                merged = dict(word_list[i])
+                merged['word'] = _PAIR_FIX[pkey] + _trailing(w1)
+                merged['end'] = word_list[i+1]['end']
+                fixed.append(merged)
+                i += 2
+                continue
+        skey = _core(w0)
+        if skey and skey in _SINGLE_FIX:
+            nw = dict(word_list[i])
+            nw['word'] = _SINGLE_FIX[skey] + _trailing(w0)
+            fixed.append(nw)
+        else:
+            fixed.append(word_list[i])
+        i += 1
+    return fixed
+
+words = fix_brands(words)
+
+# ASS colors are &HAABBGGRR (alpha, blue, green, red)
+# Caption styles for vertical (9:16) Shorts
+STYLES = {
+    'yellow': {
+        'font': 'Helvetica Neue', 'size': 56, 'bold': -1,
+        'primary': '&H00FFFFFF', 'highlight': '\\1c&H0000FFFF&', 'normal': '\\1c&H00FFFFFF&',
+        'outline_color': '&H00000000', 'back_color': '&H80000000',
+        'outline': 5, 'shadow': 1, 'border_style': 1,
+    },
+    'pink': {
+        'font': 'Helvetica Neue', 'size': 56, 'bold': -1,
+        'primary': '&H00FFFFFF', 'highlight': '\\1c&H00FF88FF&', 'normal': '\\1c&H00FFFFFF&',
+        'outline_color': '&H00000000', 'back_color': '&H80000000',
+        'outline': 5, 'shadow': 1, 'border_style': 1,
+    },
+}
+
+st = STYLES.get(style_name, STYLES['yellow'])
+
+def ass_ts(s):
+    h = int(s // 3600)
+    m = int((s % 3600) // 60)
+    sec = s % 60
+    return f'{h}:{m:02d}:{sec:05.2f}'
+
+def srt_ts(s):
+    h = int(s // 3600)
+    m = int((s % 3600) // 60)
+    sec = int(s % 60)
+    ms = int((s % 1) * 1000)
+    return f'{h:02d}:{m:02d}:{sec:02d},{ms:03d}'
+
+N = 3
+groups = [words[i:i+N] for i in range(0, len(words), N)]
+
+with open(ass_file, 'w') as f:
+    f.write('[Script Info]\n')
+    f.write('ScriptType: v4.00+\n')
+    f.write('PlayResX: 1080\n')
+    f.write('PlayResY: 1920\n')
+    f.write('WrapStyle: 0\n\n')
+    f.write('[V4+ Styles]\n')
+    f.write('Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, '
+            'OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, '
+            'ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, '
+            'Alignment, MarginL, MarginR, MarginV, Encoding\n')
+    f.write(f'Style: Default,{st["font"]},{st["size"]},{st["primary"]},&H0000FFFF,'
+            f'{st["outline_color"]},{st["back_color"]},{st["bold"]},0,0,0,100,100,0,0,'
+            f'{st["border_style"]},{st["outline"]},{st["shadow"]},'
+            f'{alignment},10,10,{margin_v},1\n\n')
+    f.write('[Events]\n')
+    f.write('Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n')
+
+    for group in groups:
+        for wi in range(len(group)):
+            start = group[wi]['start']
+            end = group[wi+1]['start'] if wi+1 < len(group) else group[wi]['end']
+            if end <= start:
+                end = start + 0.1
+
+            parts = []
+            for gi in range(len(group)):
+                w = group[gi]['word'].upper()
+                if gi == wi:
+                    parts.append('{' + st['highlight'] + '}' + w)
+                else:
+                    parts.append('{' + st['normal'] + '}' + w)
+
+            f.write(f'Dialogue: 0,{ass_ts(start)},{ass_ts(end)},Default,,0,0,0,,{" ".join(parts)}\n')
+
+# --- Editable SRT ---
+with open(srt_file, 'w') as f:
+    for i, group in enumerate(groups):
+        f.write(f'{i+1}\n')
+        f.write(f'{srt_ts(group[0]["start"])} --> {srt_ts(group[-1]["end"])}\n')
+        f.write(' '.join(w['word'].upper() for w in group) + '\n\n')
+PYEOF
+
+# ── Step 1: Transcribe (MLX Whisper, Apple Silicon) ─────────────────────────
+echo "=== Step 1/5: Transcribing (MLX Whisper: ${WHISPER_MODEL##*/}) ==="
+
+# Extract audio from original
+ffmpeg -y -i "$PRIMARY" -vn -c:a aac "$TMPDIR/audio.m4a" 2>/dev/null
+
+# MLX Whisper: native Apple Silicon, word-level timestamps. large-v3 punctuates
+# more reliably than turbo, which keeps boundary detection (.!? START_OK logic)
+# and the burned captions accurate. Override the model with WHISPER_MODEL.
+mlx_whisper "$TMPDIR/audio.m4a" \
+  --model "$WHISPER_MODEL" \
+  --language en \
+  --output-format json \
+  --word-timestamps True \
+  --output-dir "$TMPDIR" 2>/dev/null
+
+FULL_JSON="$TMPDIR/audio.json"
+
+# mlx_whisper "skips" (exit 0, no JSON) when the model id is wrong or unfetchable,
+# which would silently produce empty boundaries/clips downstream. Fail loudly.
+if [[ ! -s "$FULL_JSON" ]]; then
+  echo "Error: transcription produced no output ($FULL_JSON missing)."
+  echo "  Check WHISPER_MODEL='$WHISPER_MODEL' is a valid mlx-community model id"
+  echo "  and is fetchable (mlx_whisper downloads it on first use)."
+  exit 1
+fi
+
+# Generate SRT from JSON for display and clip selection
+python3 -c "
+import json
+with open('$TMPDIR/audio.json') as f:
+    data = json.load(f)
+with open('$TMPDIR/audio.srt', 'w') as out:
+    idx = 1
+    for seg in data.get('segments', []):
+        s = seg['start']
+        e = seg['end']
+        text = seg['text'].strip()
+        if not text: continue
+        sh,sm,ss = int(s//3600), int((s%3600)//60), s%60
+        eh,em,es = int(e//3600), int((e%3600)//60), e%60
+        out.write(f'{idx}\n')
+        out.write(f'{sh:02d}:{sm:02d}:{ss:06.3f} --> {eh:02d}:{em:02d}:{es:06.3f}\n'.replace('.',','))
+        out.write(f'{text}\n\n')
+        idx += 1
+" 2>/dev/null
+
+SRT="$TMPDIR/audio.srt"
+echo "Captions: word-level JSON + SRT generated (MLX)"
+echo ""
+
+# ── Step 1b: Detect natural boundaries from word-level timing ────────────────
+echo "--- Scanning word-level timing for natural boundaries ---"
+
+python3 -c "
+import json, re
+
+with open('$FULL_JSON') as f:
+    data = json.load(f)
+
+words = []
+for seg in data.get('segments', []):
+    for w in seg.get('words', []):
+        words.append(w)
+
+if not words:
+    exit()
+
+MARKERS = {'so','now','okay','well','first','but','remember','let','here',
+           'if','when','because','this','everybody','what','the','we','you',
+           'and','actually','basically','instead'}
+
+# Words that make bad clip openers (mid-sentence continuations)
+BAD_OPENERS = {'and','but','so','or','because','well','actually','basically',
+               'instead','also','plus','like','right','okay','then'}
+
+boundaries = []
+boundaries.append({
+    'time': round(words[0]['start'], 2),
+    'gap': 0,
+    'label': 'VIDEO_START',
+    'start_ok': True,
+    'context': ' '.join(w.get('word','').strip() for w in words[:10])
+})
+
+for i in range(1, len(words)):
+    gap = words[i].get('start', 0) - words[i-1].get('end', 0)
+    if gap < 0.5:
+        continue
+    word_after = words[i].get('word', '').strip().lower().rstrip('.,!?:')
+    word_before = words[i-1].get('word', '').strip()
+    is_sentence_end = word_before.rstrip().endswith(('.','!','?'))
+    is_marker = word_after in MARKERS
+    is_strong = gap > 1.0 or (gap > 0.5 and (is_sentence_end or is_marker))
+    if not is_strong:
+        continue
+    t = words[i]['start']
+    strength = 'STRONG' if gap > 1.5 else 'medium' if gap > 0.8 else 'light'
+    context = ' '.join(w.get('word','').strip() for w in words[i:min(i+12, len(words))])
+    # A boundary is only good for starting a clip if the previous word
+    # ended a sentence AND the next word isn't a mid-sentence conjunction
+    can_start = is_sentence_end and word_after not in BAD_OPENERS
+    boundaries.append({
+        'time': round(t, 2),
+        'gap': round(gap, 1),
+        'label': strength,
+        'start_ok': can_start,
+        'context': context
+    })
+
+boundaries.append({
+    'time': round(words[-1]['end'], 2),
+    'gap': 0,
+    'label': 'VIDEO_END',
+    'start_ok': False,
+    'context': ''
+})
+
+for b in boundaries:
+    t = b['time']
+    m = int(t // 60)
+    s = t % 60
+    tag = 'START_OK' if b['start_ok'] else 'end_only'
+    print(f'[{m:02d}:{s:05.2f}] ({b[\"gap\"]}s pause, {b[\"label\"]}, {tag}) {b[\"context\"]}')
+
+with open('$TMPDIR/boundaries.json', 'w') as f:
+    json.dump(boundaries, f, indent=2)
+" 2>/dev/null
+
+BOUNDARY_COUNT=$(jq length "$TMPDIR/boundaries.json" 2>/dev/null || echo 0)
+echo "Found $BOUNDARY_COUNT natural boundaries"
+
+# Build the annotated boundary list for the AI prompt
+BOUNDARY_LIST=$(python3 -c "
+import json
+with open('$TMPDIR/boundaries.json') as f:
+    boundaries = json.load(f)
+for b in boundaries:
+    t = b['time']
+    m = int(t // 60)
+    s = t % 60
+    tag = 'START_OK' if b.get('start_ok') else 'end_only'
+    print(f'  [{m:02d}:{s:05.2f}] ({b[\"gap\"]}s pause, {b[\"label\"]}, {tag}) {b[\"context\"][:80]}')
+" 2>/dev/null || echo "  (no boundaries detected)")
+echo "$BOUNDARY_LIST"
+echo ""
+
+# ── Step 2: AI picks candidate clips ────────────────────────────────────────
+CANDIDATES=$((NUM_CLIPS * 2))
+if [[ -n "$CLIPS_FILE" ]]; then
+  echo "=== Manual clips from $CLIPS_FILE (skipping AI selection) ==="
+  CLIPS_JSON=$(cat "$CLIPS_FILE")
+else
+echo "=== Step 2/5: AI selecting ${CANDIDATES} candidate clips ==="
+
+TRANSCRIPT=$(cat "$SRT")
+VIDEO_DURATION=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$PRIMARY" 2>/dev/null | cut -d. -f1)
+
+PROMPT=$(cat <<PROMPT_END
+You are selecting clips from a video transcript for YouTube Shorts (max 60 seconds each).
+
+NATURAL BOUNDARIES — detected from audio timing (pauses between words):
+$BOUNDARY_LIST
+
+CRITICAL RULES:
+- Each clip must be 20-60 seconds long (shorter and punchier is better)
+- Each clip MUST start at a boundary marked START_OK — these begin a new sentence after sentence-ending punctuation
+- Boundaries marked end_only may ONLY be used as clip END points — they fall mid-sentence (after conjunctions like and/but/so)
+- Each clip MUST end at one of the NATURAL BOUNDARY timestamps listed above (START_OK or end_only are both fine for ends)
+- Use the boundary timestamps EXACTLY as shown (MM:SS.ss format → convert to HH:MM:SS)
+- These boundaries are where the speaker naturally paused — cutting here sounds clean
+- Each clip must work as a STANDALONE piece — someone watching with no context should understand it
+- Prefer segments that start with a hook (a question, bold claim, surprising statement)
+- Avoid segments that reference "as I showed earlier" or need prior context
+- Clips must not overlap
+- Return ONLY valid JSON, no other text, no markdown fences
+
+INTRO/OUTRO QUALITY (critical — clips with cut-off speech get rejected):
+- The FIRST sentence must be COMPLETE — never start mid-thought or mid-sentence
+- The LAST sentence must be COMPLETE — never cut off mid-sentence at the end
+- The opening must make sense to someone who just started watching (no dangling references)
+- A clean ending is one where the speaker finishes a thought, makes a concluding statement, or lands a punchline
+- If no boundary gives a clean ending, prefer ending EARLIER at a complete thought over ending later mid-sentence
+
+Return exactly this JSON structure:
+[
+  {
+    "title": "short descriptive title for the clip",
+    "start": "HH:MM:SS",
+    "end": "HH:MM:SS",
+    "hook": "why this segment works as a standalone Short"
+  }
+]
+PROMPT_END
+)
+
+PAYLOAD=$(jq -n \
+  --arg model "$OMLX_MODEL" \
+  --arg system "$PROMPT" \
+  --arg user "Select the best ${CANDIDATES} clips from this ${VIDEO_DURATION}-second video transcript. You MUST start each clip at a START_OK boundary (never end_only). You may end clips at any boundary.
+
+$TRANSCRIPT" \
+  '{
+    model: $model,
+    temperature: 0.3,
+    messages: [
+      {role: "system", content: $system},
+      {role: "user", content: $user}
+    ]
+  }')
+
+RESPONSE=$(curl -sf "$OMLX_URL/chat/completions" \
+  -H "Content-Type: application/json" \
+  -d "$PAYLOAD" 2>/dev/null)
+
+if [[ -z "$RESPONSE" ]]; then
+  echo "Error: AI endpoint returned no response"
+  exit 1
+fi
+
+AI_CONTENT=$(echo "$RESPONSE" | jq -r '.choices[0].message.content // empty')
+
+if [[ -z "$AI_CONTENT" ]]; then
+  echo "Error: AI returned empty content"
+  echo "Raw response: $RESPONSE" | head -5
+  exit 1
+fi
+
+# Strip markdown fences and thinking tags
+ALL_CLIPS_JSON=$(echo "$AI_CONTENT" | sed 's/^```json//;s/^```//;s/```$//;' | sed '/<think>/,/<\/think>/d' | tr -d '\n' | grep -o '\[.*\]')
+
+if ! echo "$ALL_CLIPS_JSON" | jq empty 2>/dev/null; then
+  echo "Error: AI returned invalid JSON"
+  echo "$AI_CONTENT"
+  exit 1
+fi
+
+ALL_COUNT=$(echo "$ALL_CLIPS_JSON" | jq length)
+echo "Found $ALL_COUNT candidates:"
+echo "$ALL_CLIPS_JSON" | jq -r '.[] | "  [\(.start) → \(.end)] \(.title)"'
+echo ""
+
+# ── Step 3: AI judges candidates (cheap — transcript only) ─────────────────
+echo "=== Step 3/5: AI judging candidates ==="
+
+JUDGE_MODEL="${JUDGE_MODEL:-gemma-4-31b-it-4bit}"
+
+JUDGE_SYSTEM='Score this YouTube Shorts clip transcript on 6 dimensions (1-10). Be harsh. Most clips score 4-7.
+
+Dimensions:
+- hook: Does the FIRST sentence grab attention? A question, bold claim, or surprising stat? Score 1-3 if it starts with "so", "and", "well", or mid-thought.
+- clean_start: Does the clip begin at a clear sentence boundary? Score 1 if the first words feel like the middle of a thought. Score 10 if the opening is a complete, self-contained statement.
+- clean_end: Does the clip end at a natural stopping point? Score 1 if it cuts off mid-sentence. Score 10 if the speaker finishes a thought or makes a concluding statement.
+- standalone: Can someone understand this without watching the full video? Score low if it references earlier content.
+- value: Does it teach something specific or share a compelling data point?
+- completeness: Does it make ONE full point from start to finish?
+
+Output ONLY a JSON object:
+{"hook":N,"clean_start":N,"clean_end":N,"standalone":N,"value":N,"completeness":N}'
+
+# For each candidate, extract the transcript slice and judge it
+SCORED_JSON="[]"
+for i in $(seq 0 $((ALL_COUNT - 1))); do
+  TITLE=$(echo "$ALL_CLIPS_JSON" | jq -r ".[$i].title")
+  C_START=$(echo "$ALL_CLIPS_JSON" | jq -r ".[$i].start")
+  C_END=$(echo "$ALL_CLIPS_JSON" | jq -r ".[$i].end")
+
+  # Extract the transcript text between start and end timestamps
+  # Handle both HH:MM:SS and MM:SS formats
+  START_SECS=$(echo "$C_START" | awk -F: '{if(NF==3) print ($1*3600)+($2*60)+$3; else print ($1*60)+$2}')
+  END_SECS=$(echo "$C_END" | awk -F: '{if(NF==3) print ($1*3600)+($2*60)+$3; else print ($1*60)+$2}')
+
+  # Pull lines from the SRT that fall within this time range
+  CLIP_TEXT=$(python3 -c "
+import re, sys
+lines = open('$SRT').read()
+# Parse SRT timecodes and text
+blocks = re.split(r'\n\n+', lines.strip())
+result = []
+for block in blocks:
+    m = re.search(r'(\d{2}):(\d{2}):(\d{2})[.,](\d+)\s*-->\s*(\d{2}):(\d{2}):(\d{2})', block)
+    if not m: continue
+    t = int(m.group(1))*3600 + int(m.group(2))*60 + int(m.group(3))
+    text_lines = block.split('\n')
+    text = ' '.join(l for l in text_lines[2:] if l.strip())
+    if t >= $START_SECS and t <= $END_SECS and text:
+        result.append(text)
+print(' '.join(result))
+" 2>/dev/null)
+
+  if [[ -z "$CLIP_TEXT" ]]; then
+    CLIP_TEXT="$TITLE"
+  fi
+
+  # Judge with local AI
+  JUDGE_REQ=$(jq -n \
+    --arg model "$JUDGE_MODEL" \
+    --arg system "$JUDGE_SYSTEM" \
+    --arg text "$CLIP_TEXT" \
+    '{
+      model: $model,
+      messages: [
+        {role: "system", content: $system},
+        {role: "user", content: $text}
+      ],
+      temperature: 0.3,
+      max_tokens: 200
+    }')
+
+  JUDGE_RESP=$(curl -s --max-time 60 "$OMLX_URL/chat/completions" \
+    -H "Content-Type: application/json" \
+    -d "$JUDGE_REQ" 2>/dev/null)
+
+  JUDGE_CONTENT=$(echo "$JUDGE_RESP" | jq -r '.choices[0].message.content // "{}"')
+  # Extract JSON from possible markdown wrapper
+  JUDGE_JSON=$(echo "$JUDGE_CONTENT" | sed 's/```json//g;s/```//g' | tr -d '\n' | grep -oE '\{[^}]+\}' | head -1 || echo "{}")
+
+  # Calculate average score
+  AVG=$(echo "$JUDGE_JSON" | jq -r '
+    [.hook, .clean_start, .clean_end, .standalone, .value, .completeness]
+    | map(select(. != null))
+    | if length > 0 then (add / length * 10 | round / 10) else 0 end
+  ' 2>/dev/null || echo "0")
+
+  SCORES_DISPLAY=$(echo "$JUDGE_JSON" | jq -r '
+    "hook=\(.hook // "?") start=\(.clean_start // "?") end=\(.clean_end // "?") standalone=\(.standalone // "?") value=\(.value // "?") complete=\(.completeness // "?")"
+  ' 2>/dev/null || echo "parse error")
+
+  echo "  [$C_START → $C_END] $TITLE"
+  echo "    ${SCORES_DISPLAY}  AVG=${AVG}"
+
+  # Add score to the clip object
+  SCORED_JSON=$(echo "$SCORED_JSON" | jq --argjson idx "$i" --argjson avg "$AVG" --argjson clip "$(echo "$ALL_CLIPS_JSON" | jq ".[$i]")" \
+    '. + [$clip + {score: $avg}]')
+done
+
+echo ""
+
+# Sort by score descending, take top NUM_CLIPS
+CLIPS_JSON=$(echo "$SCORED_JSON" | jq --argjson n "$NUM_CLIPS" '[sort_by(-.score) | .[:$n] | .[] | del(.score)]')
+fi
+CLIP_COUNT=$(echo "$CLIPS_JSON" | jq length)
+
+echo "Selected top $CLIP_COUNT clips for rendering:"
+echo "$CLIPS_JSON" | jq -r '.[] | "  [\(.start) → \(.end)] \(.title)"'
+echo ""
+
+if [[ "$DRY_RUN" == true ]]; then
+  echo "=== Dry run complete (skipping video rendering) ==="
+  exit 0
+fi
+
+# ── Step 4: Extract clips + per-clip captions ───────────────────────────────
+echo "=== Step 4/5: Extracting clip segments + per-clip captions ==="
+
+# Detect silence gaps once so clip boundaries snap to real pauses — clean,
+# non-mid-word cuts with a natural breath, instead of clipping into the next word.
+SIL_JSON="$TMPDIR/silences.json"
+ffmpeg -i "$PRIMARY" -af "silencedetect=noise=-32dB:d=0.15" -f null - 2>&1 \
+  | python3 -c "
+import sys, re, json
+ivs=[]; cur=None
+for line in sys.stdin:
+    m=re.search(r'silence_start:\s*([0-9.]+)', line)
+    if m: cur=float(m.group(1))
+    m=re.search(r'silence_end:\s*([0-9.]+)', line)
+    if m and cur is not None:
+        ivs.append([cur, float(m.group(1))]); cur=None
+json.dump(ivs, open('$SIL_JSON','w'))
+" 2>/dev/null || true
+[[ -s "$SIL_JSON" ]] || echo '[]' > "$SIL_JSON"
+
+for i in $(seq 0 $((CLIP_COUNT - 1))); do
+  IDX=$(printf "%02d" $((i + 1)))
+  TITLE=$(echo "$CLIPS_JSON" | jq -r ".[$i].title")
+  START=$(echo "$CLIPS_JSON" | jq -r ".[$i].start")
+  END=$(echo "$CLIPS_JSON" | jq -r ".[$i].end")
+
+  # Snap to exact word onsets. The selector returns whole-second timestamps (the
+  # prompt converts MM:SS.ss -> HH:MM:SS, dropping the decimals), so a clip can
+  # begin ~0.5s before the first word — opening on room noise or a breath. Snap
+  # the start to the first word's onset and the end to the last word's tail (+pad)
+  # so clips start and end cleanly on speech, regardless of what Whisper labelled
+  # the silence as.
+  START_RAW=$(echo "$START" | awk -F: '{if(NF==3) printf "%.3f",($1*3600)+($2*60)+$3; else printf "%.3f",($1*60)+$2}')
+  END_RAW=$(echo "$END" | awk -F: '{if(NF==3) printf "%.3f",($1*3600)+($2*60)+$3; else printf "%.3f",($1*60)+$2}')
+  read -r START END < <(python3 -c "
+import json
+words=[w for s in json.load(open('$FULL_JSON')).get('segments',[]) for w in s.get('words',[]) if 'start' in w and 'end' in w]
+try: sil=json.load(open('$SIL_JSON'))
+except Exception: sil=[]
+cs, ce = $START_RAW, $END_RAW
+# Start: just after the nearest pause ending close to cs (small lead-in); else word onset.
+c=[s[1] for s in sil if cs-2.0 <= s[1] <= cs+0.8]
+if c:
+    ss=min(c, key=lambda x: abs(x-cs)) - 0.05
+else:
+    st=[w['start'] for w in words if w['start']>=cs-0.4]
+    ss=min(st) if st else cs
+# End: just inside the nearest pause starting close to ce (natural breath); else last whole word.
+c=[s[0] for s in sil if ce-0.8 <= s[0] <= ce+2.0]
+if c:
+    ee=min(c, key=lambda x: abs(x-ce)) + 0.18
+else:
+    en=[w['end'] for w in words if w['end']<=ce+0.1]
+    ee=(max(en) if en else ce)+0.15
+def f(x):
+    h=int(x//3600); m=int((x%3600)//60); s=x%60
+    return f'{h:02d}:{m:02d}:{s:06.3f}'
+print(f(max(0,ss)), f(ee))
+" 2>/dev/null)
+
+  echo "  Clip $IDX: [$START → $END] $TITLE"
+
+  # Re-encode the slice (don't stream-copy). Stream copy can only cut on
+  # keyframes, so -to snaps back to the last keyframe before the target and
+  # chops the final words (e.g. dropping a trailing "4143"). Re-encoding gives
+  # frame-accurate ends. crf 18 keeps these intermediates near-lossless so the
+  # second encode in Step 5 doesn't visibly soften screen text.
+  if [[ "$HAS_LAYERS" == true ]]; then
+    ffmpeg -y -ss "$START" -to "$END" -i "$CAMERA" \
+      -c:v libx264 -crf 18 -preset veryfast -c:a aac "$TMPDIR/clip_${IDX}_cam.mp4" 2>/dev/null
+    ffmpeg -y -ss "$START" -to "$END" -i "$SCREEN" \
+      -c:v libx264 -crf 18 -preset veryfast -c:a aac "$TMPDIR/clip_${IDX}_scr.mp4" 2>/dev/null
+  else
+    ffmpeg -y -ss "$START" -to "$END" -i "$FLAT_VIDEO" \
+      -c:v libx264 -crf 18 -preset veryfast -c:a aac "$TMPDIR/clip_${IDX}_raw.mp4" 2>/dev/null
+  fi
+
+  # Slice word-level timestamps from full transcript (no second Whisper run)
+  # Handle both HH:MM:SS and MM:SS formats
+  START_SECS=$(echo "$START" | awk -F: '{if(NF==3) printf "%.3f",($1*3600)+($2*60)+$3; else printf "%.3f",($1*60)+$2}')
+  END_SECS=$(echo "$END" | awk -F: '{if(NF==3) printf "%.3f",($1*3600)+($2*60)+$3; else printf "%.3f",($1*60)+$2}')
+
+  python3 -c "
+import json
+with open('$FULL_JSON') as f:
+    data = json.load(f)
+clip_start, clip_end = $START_SECS, $END_SECS
+words = []
+for seg in data.get('segments', []):
+    for w in seg.get('words', []):
+        ws, we = w.get('start', 0), w.get('end', 0)
+        if ws >= clip_start - 0.5 and we <= clip_end + 0.5:
+            words.append({
+                'word': w.get('word', '').strip(),
+                'start': round(max(0, ws - clip_start), 3),
+                'end': round(max(0, we - clip_start), 3)
+            })
+out = {'segments': [{'words': words}]} if words else {'segments': []}
+with open('$TMPDIR/clip_${IDX}_audio.json', 'w') as f:
+    json.dump(out, f)
+" 2>/dev/null
+
+  CLIP_JSON="$TMPDIR/clip_${IDX}_audio.json"
+  if [[ -s "$CLIP_JSON" ]]; then
+    ALIGN=8 MARGINV=610
+    [[ "$HAS_LAYERS" == false ]] && ALIGN=2 && MARGINV=100
+    python3 "$TMPDIR/gen_captions.py" "$CLIP_JSON" "$TMPDIR/clip_${IDX}.ass" "$TMPDIR/clip_${IDX}.srt" "$ALIGN" "$MARGINV" "$CAPTION_STYLE"
+    cp "$TMPDIR/clip_${IDX}.srt" "$WORKDIR/clip_${IDX}.srt"
+  fi
+done
+
+echo ""
+
+# ── Step 4b: Vision-guided screen crop analysis ──────────────────────────────
+# For each clip, sample frames from Screen.mp4 and ask a vision model where the
+# important content is horizontally. The median X becomes the crop anchor so we
+# lose the LEAST important edges instead of blindly center-cropping.
+if [[ "$HAS_LAYERS" == true && "$SCREEN_FIT" == "cover" ]]; then
+  echo "=== Analyzing screen content for smart cropping ==="
+
+  SCR_W=$(ffprobe -v error -select_streams v:0 -show_entries stream=width -of csv=p=0 "$SCREEN" 2>/dev/null)
+  SCR_H=$(ffprobe -v error -select_streams v:0 -show_entries stream=height -of csv=p=0 "$SCREEN" 2>/dev/null)
+  SCALED_W=$(python3 -c "w=int(${SCR_W}*${SCR_BAND_H}/${SCR_H}); print(w+1 if w%2 else w)")
+  CENTER_X=$(( (SCALED_W - 1080) / 2 ))
+  ANALYSIS_W=1280
+
+  echo "  Screen: ${SCR_W}x${SCR_H} → scaled ${SCALED_W}x${SCR_BAND_H} → crop 1080x${SCR_BAND_H}"
+
+  declare -a CROP_OFFSETS
+
+  for i in $(seq 0 $((CLIP_COUNT - 1))); do
+    IDX=$(printf "%02d" $((i + 1)))
+    SCR_CLIP="$TMPDIR/clip_${IDX}_scr.mp4"
+    TITLE=$(echo "$CLIPS_JSON" | jq -r ".[$i].title")
+
+    CLIP_DUR=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$SCR_CLIP" 2>/dev/null)
+
+    # Extract 3 sample frames (25%, 50%, 75% through clip) at reduced resolution
+    FRAMES_DIR="$TMPDIR/frames_${IDX}"
+    mkdir -p "$FRAMES_DIR"
+    for pct in 25 50 75; do
+      FRAME_TIME=$(python3 -c "print(f'{float(\"${CLIP_DUR}\") * ${pct} / 100:.2f}')")
+      ffmpeg -y -ss "$FRAME_TIME" -i "$SCR_CLIP" -frames:v 1 \
+        -vf "scale=${ANALYSIS_W}:-2" -q:v 8 \
+        "$FRAMES_DIR/frame_${pct}.jpg" 2>/dev/null
+    done
+
+    # Ask vision model which direction has more important content
+    # Classification (LEFT/CENTER/RIGHT) works far better than asking for raw X coords
+    VOTES=""
+    for pct in 25 50 75; do
+      FRAME="$FRAMES_DIR/frame_${pct}.jpg"
+      [[ -f "$FRAME" ]] || continue
+
+      python3 -c "
+import json, base64
+with open('${FRAME}', 'rb') as f:
+    b64 = base64.b64encode(f.read()).decode()
+payload = {
+    'model': '${JUDGE_MODEL:-gemma-4-31b-it-4bit}',
+    'messages': [{'role': 'user', 'content': [
+        {'type': 'image_url', 'image_url': {'url': f'data:image/jpeg;base64,{b64}'}},
+        {'type': 'text', 'text': 'I will crop a narrow vertical strip from this screen recording. I can position the crop biased LEFT, CENTER, or RIGHT. Which position captures the most important content (titles, data, charts, key text)? Answer exactly one word: LEFT, CENTER, or RIGHT.'}
+    ]}],
+    'temperature': 0.1,
+    'max_tokens': 10
+}
+with open('${FRAMES_DIR}/req_${pct}.json', 'w') as f:
+    json.dump(payload, f)
+" 2>/dev/null
+
+      VISION_RESP=$(curl -s --max-time 30 "$OMLX_URL/chat/completions" \
+        -H "Content-Type: application/json" \
+        -d @"$FRAMES_DIR/req_${pct}.json" 2>/dev/null)
+
+      VOTE=$(echo "$VISION_RESP" | jq -r '.choices[0].message.content // ""' | \
+        sed '/<think>/,/<\/think>/d' | tr '[:lower:]' '[:upper:]' | grep -oE 'LEFT|CENTER|RIGHT' | head -1)
+
+      [[ -n "$VOTE" ]] && VOTES="$VOTES $VOTE"
+    done
+
+    # Mode of votes → crop offset
+    if [[ -n "$(echo "$VOTES" | tr -d ' ')" ]]; then
+      DIRECTION=$(echo "$VOTES" | tr ' ' '\n' | sort | uniq -c | sort -rn | head -1 | awk '{print $2}')
+      CROP_OFFSET=$(python3 -c "
+center = ${CENTER_X}
+max_offset = ${SCALED_W} - 1080
+d = '${DIRECTION}'
+if d == 'LEFT':
+    print(max(0, center // 3))
+elif d == 'RIGHT':
+    print(min(max_offset, center + center * 2 // 3))
+else:
+    print(center)
+")
+      echo "  Clip $IDX: ${DIRECTION} → offset ${CROP_OFFSET}px  ($TITLE)"
+    else
+      CROP_OFFSET=$CENTER_X
+      echo "  Clip $IDX: vision fallback → center crop  ($TITLE)"
+    fi
+
+    CROP_OFFSETS[$i]=$CROP_OFFSET
+  done
+  echo ""
+fi
+
+# ── Step 5: Compose final clips ─────────────────────────────────────────────
+echo "=== Step 5/5: Composing final clips ==="
+
+for i in $(seq 0 $((CLIP_COUNT - 1))); do
+  IDX=$(printf "%02d" $((i + 1)))
+  CLIP_ASS="$TMPDIR/clip_${IDX}.ass"
+  CLIP_OUT="$WORKDIR/clip_${IDX}.mp4"
+  TITLE=$(echo "$CLIPS_JSON" | jq -r ".[$i].title")
+
+  echo "  Clip $IDX: $TITLE"
+
+  if [[ "$HAS_LAYERS" == true ]]; then
+    # Camera top (CAM_H px) + Screen bottom (SCR_BAND_H px) = 1080x1920.
+    # Face: scale to FILL the 1080xCAM_H band (cover + center crop) so a ~square
+    # source reads big and tall — a band nearer 1:1 = bigger face.
+    FILTER="[0:v]fps=30,scale=1080:${CAM_H}:force_original_aspect_ratio=increase,crop=1080:${CAM_H}[cam];"
+
+    # Screen: fit (default) scales the whole frame to 1080 wide and letterboxes
+    # to the band height — nothing is cropped, so side-by-side panes stay intact.
+    # cover fills the band height and crops 1080 wide at the vision-guided offset.
+    if [[ "$SCREEN_FIT" == "cover" ]]; then
+      CROP_X="${CROP_OFFSETS[$i]:-${CENTER_X:-349}}"
+      FILTER+="[1:v]fps=30,scale=-2:${SCR_BAND_H},crop=1080:${SCR_BAND_H}:${CROP_X}:0[scr_final];"
+    else
+      FILTER+="[1:v]fps=30,scale=1080:${SCR_BAND_H}:force_original_aspect_ratio=decrease,pad=1080:${SCR_BAND_H}:-1:-1:color=black[scr_final];"
+    fi
+    FILTER+="[cam][scr_final]vstack=inputs=2"
+
+    if [[ -s "$CLIP_ASS" ]]; then
+      FILTER+=",ass=${CLIP_ASS}"
+    fi
+    FILTER+="[out]"
+
+    ffmpeg -y \
+      -i "$TMPDIR/clip_${IDX}_cam.mp4" \
+      -i "$TMPDIR/clip_${IDX}_scr.mp4" \
+      -filter_complex "$FILTER" \
+      -map "[out]" -map "0:a" \
+      -c:v libx264 -crf 23 -preset fast \
+      -c:a aac -b:a 128k \
+      "$CLIP_OUT" 2>/dev/null
+  else
+    # Flat video: burn ASS captions
+    if [[ -s "$CLIP_ASS" ]]; then
+      ffmpeg -y -i "$TMPDIR/clip_${IDX}_raw.mp4" \
+        -vf "ass=${CLIP_ASS}" \
+        -c:v libx264 -crf 23 -preset fast \
+        -c:a aac -b:a 128k \
+        "$CLIP_OUT" 2>/dev/null
+    else
+      cp "$TMPDIR/clip_${IDX}_raw.mp4" "$CLIP_OUT"
+    fi
+  fi
+done
+
+echo ""
+echo "=== Done ==="
+echo ""
+
+# ── Summary ───────────────────────────────────────────────────────────────────
+for i in $(seq 0 $((CLIP_COUNT - 1))); do
+  IDX=$(printf "%02d" $((i + 1)))
+  CLIP_OUT="$WORKDIR/clip_${IDX}.mp4"
+  if [[ -f "$CLIP_OUT" ]]; then
+    DUR=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$CLIP_OUT" 2>/dev/null | cut -d. -f1)
+    SZ=$(du -h "$CLIP_OUT" | cut -f1)
+    RES=$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 "$CLIP_OUT" 2>/dev/null)
+    TITLE=$(echo "$CLIPS_JSON" | jq -r ".[$i].title")
+    echo "  clip_${IDX}.mp4  ${DUR}s  ${RES}  ${SZ}  $TITLE"
+  fi
+done
+
+echo ""
+echo "Captions: clip_*.srt (edit these to fix text, then re-run)"
+echo "Preview:  open $WORKDIR/clip_01.mp4"
+echo "Upload:   https://studio.youtube.com"

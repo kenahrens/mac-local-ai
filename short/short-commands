@@ -1,0 +1,114 @@
+#!/usr/bin/env bash
+# short-commands — burn timed terminal command chips onto rendered Shorts clips.
+#
+# `short` renders clip_NN.mp4 (face + screen, captions). This overlays the CLI
+# commands the demo ran, as a terminal-style line, at the times you choose. The
+# screen recording's own text is tiny in a vertical Short, so this surfaces the
+# one thing a viewer wants to copy — the command — big and legible.
+#
+# Usage:
+#   short-commands <dir>                  read <dir>/commands.json, render every clip in it
+#   short-commands <dir> <commands.json>  use a specific JSON
+#
+# commands.json — clip-relative timings (seconds from the start of each clip):
+#   {
+#     "clip_01": [
+#       {"start": 6.0,  "end": 14.0, "text": "proxymock record --app-port 8081"},
+#       {"start": 32.0, "end": 40.0, "text": "proxymock web"}
+#     ],
+#     "clip_02": [
+#       {"start": 1.0, "end": 7.0, "text": "proxymock replay --test-against localhost:8081"}
+#     ]
+#   }
+#
+# Edit the JSON and re-run to regenerate. Output: clip_NN_cmd.mp4 (source clip
+# is left untouched). Font override: CMD_FONT (default Menlo).
+#
+# Deps: ffmpeg (with libass), jq, python3
+
+set -euo pipefail
+
+DIR="${1:-.}"
+JSON="${2:-$DIR/commands.json}"
+FONT="${CMD_FONT:-Menlo}"
+# Command-chip font size on the 1080x1920 canvas. Default is large so the
+# command is readable on a phone; long commands wrap to a second line.
+CMD_FONTSIZE="${CMD_FONTSIZE:-52}"
+
+# Vertical center (px) for the command line. Default places it in the upper
+# letterbox bar — the gap between the face band (top) and the fitted screen
+# (below) — so it reads as the command driving the screen underneath. Derived
+# from the face band height (CAM_H) and the screen aspect (SCREEN_AR); override
+# directly with CMD_CY.
+CAM_H="${CAM_H:-810}"
+SCREEN_AR="${SCREEN_AR:-16:9}"
+CMD_CY="${CMD_CY:-$(python3 -c "
+w,h='${SCREEN_AR}'.split(':')
+fitted=round(1080*float(h)/float(w))      # screen scaled to 1080 wide
+band=1920-${CAM_H}                         # screen band height
+gap_top=(band-fitted)/2                     # upper letterbox height
+print(int(${CAM_H}+gap_top/2))              # center of the upper bar
+")}"
+
+command -v ffmpeg >/dev/null || { echo "Missing: ffmpeg"; exit 1; }
+command -v jq >/dev/null     || { echo "Missing: jq"; exit 1; }
+[[ -f "$JSON" ]] || { echo "No commands JSON at: $JSON"; exit 1; }
+
+TMPDIR=$(mktemp -d)
+trap 'rm -rf "$TMPDIR"' EXIT
+
+# ── ASS generator: one timed terminal line per command ──────────────────────
+cat << 'PYEOF' > "$TMPDIR/gen_cmd_ass.py"
+import json, sys
+
+clip, jf, out, font, cy = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], int(sys.argv[5])
+fontsize = int(sys.argv[6]) if len(sys.argv) > 6 else 52
+events = json.load(open(jf)).get(clip, [])
+
+def ts(s):
+    h = int(s // 3600); m = int((s % 3600) // 60); sec = s % 60
+    return f"{h}:{m:02d}:{sec:05.2f}"
+
+with open(out, 'w') as f:
+    f.write("[Script Info]\nScriptType: v4.00+\nPlayResX: 1080\nPlayResY: 1920\nWrapStyle: 0\n\n")
+    f.write("[V4+ Styles]\n")
+    f.write("Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, "
+            "OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, "
+            "ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
+            "Alignment, MarginL, MarginR, MarginV, Encoding\n")
+    # Opaque-box style (BorderStyle 3): box drawn in OutlineColour, text in
+    # PrimaryColour. Positioned per-event with \pos; \an5 anchors on the middle
+    # center so the box sits centered in the upper letterbox bar.
+    f.write(f"Style: Cmd,{font},{fontsize},&H00FFFFFF,&H000000FF,&HD0101010,&H00000000,"
+            f"1,0,0,0,100,100,0,0,3,14,0,5,40,40,0,1\n\n")
+    f.write("[Events]\n")
+    f.write("Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n")
+    for e in events:
+        text = str(e.get('text', '')).replace('\n', ' ').replace('{', '(').replace('}', ')')
+        # absolute position (center of upper bar), green prompt, white command
+        line = f"{{\\an5\\pos(540,{cy})\\1c&H0000FF00&}}$ {{\\1c&H00FFFFFF&}}" + text
+        f.write(f"Dialogue: 0,{ts(float(e['start']))},{ts(float(e['end']))},Cmd,,0,0,0,,{line}\n")
+PYEOF
+
+mapfile -t CLIPS < <(jq -r 'keys[]' "$JSON")
+[[ ${#CLIPS[@]} -gt 0 ]] || { echo "No clips in $JSON"; exit 1; }
+
+for clip in "${CLIPS[@]}"; do
+  SRC="$DIR/${clip}.mp4"
+  if [[ ! -f "$SRC" ]]; then
+    echo "skip $clip (no $SRC)"
+    continue
+  fi
+  ASS="$TMPDIR/${clip}.cmd.ass"
+  python3 "$TMPDIR/gen_cmd_ass.py" "$clip" "$JSON" "$ASS" "$FONT" "$CMD_CY" "$CMD_FONTSIZE"
+
+  OUT="$DIR/${clip}_cmd.mp4"
+  N=$(jq -r --arg c "$clip" '.[$c] | length' "$JSON")
+  echo "  $clip → $(basename "$OUT")  (${N} command(s))"
+  ffmpeg -y -i "$SRC" -vf "ass=${ASS}" \
+    -c:v libx264 -crf 20 -preset fast -c:a copy "$OUT" 2>/dev/null
+done
+
+echo ""
+echo "Done. Edit $(basename "$JSON") and re-run to regenerate."
+echo "Preview: open $DIR/${CLIPS[0]}_cmd.mp4"
