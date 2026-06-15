@@ -13,11 +13,11 @@
 # commands.json — clip-relative timings (seconds from the start of each clip):
 #   {
 #     "clip_01": [
-#       {"start": 6.0,  "end": 14.0, "text": "proxymock record --app-port 8081"},
-#       {"start": 32.0, "end": 40.0, "text": "proxymock web"}
+#       {"start": 6.0,  "end": 14.0, "text": "npm install"},
+#       {"start": 32.0, "end": 40.0, "text": "npm run dev"}
 #     ],
 #     "clip_02": [
-#       {"start": 1.0, "end": 7.0, "text": "proxymock replay --test-against localhost:8081"}
+#       {"start": 1.0, "end": 7.0, "text": "npm test"}
 #     ]
 #   }
 #
