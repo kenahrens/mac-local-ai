@@ -10,6 +10,7 @@ Most of this is glue around other people's open source. The engines are theirs. 
 - **[`ds4/`](ds4/)** — running [antirez's DeepSeek build](https://github.com/antirez/ds4) as a LaunchAgent.
 - **[`short/`](short/)** — turning a long screen recording into vertical YouTube Shorts, using a local LLM to pick and judge the clips.
 - **[`launchd/`](launchd/)** — scheduling local jobs with launchd instead of cron, and why.
+- **[`editors/`](editors/)** — keeping Zed, VSCodium, VS Code, and Cursor consistent on `AGENTS.md`, MCP servers, and the local model endpoints.
 
 ## What I run (M5, 128GB)
 

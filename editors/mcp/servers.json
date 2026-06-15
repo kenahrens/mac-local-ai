@@ -1,0 +1,17 @@
+{
+  "_comment": "Canonical MCP server roster. Edit this one file; run ./generate.py to emit each editor's format. These are generic example servers — swap in your own.",
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "."]
+    },
+    "git": {
+      "command": "uvx",
+      "args": ["mcp-server-git", "--repository", "."]
+    },
+    "fetch": {
+      "command": "uvx",
+      "args": ["mcp-server-fetch"]
+    }
+  }
+}

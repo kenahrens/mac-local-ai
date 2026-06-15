@@ -1,0 +1,29 @@
+# Continue config (~/.continue/config.yaml). Used in VS Code and VSCodium, where
+# there's no native agent. Points at local endpoints (see the oMLX/ds4 setup in this repo (../omlx, ../ds4))
+# with a cloud model as fallback. Docs: https://docs.continue.dev/reference
+name: local-and-cloud
+version: 0.0.1
+schema: v1
+
+models:
+  - name: oMLX Qwen (local)
+    provider: openai
+    model: Qwen3.6-27B-4bit
+    apiBase: http://localhost:38010/v1
+    apiKey: unused
+    roles: [chat, edit, apply]
+
+  - name: ds4 (local)
+    provider: openai
+    model: deepseek-v4-flash
+    apiBase: http://localhost:38011/v1
+    apiKey: unused
+    roles: [chat]
+
+  - name: GPT (cloud)
+    provider: openai
+    model: gpt-4o
+    apiKey: ${{ secrets.OPENAI_API_KEY }}
+    roles: [chat, edit]
+
+# MCP servers live in .continue/mcpServers/*.yaml — generate them with mcp/generate.py.
