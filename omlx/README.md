@@ -6,6 +6,15 @@ Scripts to run [oMLX](https://github.com/jundot/omlx) as an always-on local infe
 
 oMLX is distributed as a Homebrew formula and a menu-bar app. See [jundot/omlx](https://github.com/jundot/omlx). The scripts here assume the Homebrew install at `/opt/homebrew/opt/omlx`.
 
+Newer versions of Homebrew require you to explicitly trust third-party taps before they'll load anything from them. Run this once before `brew services` will manage oMLX:
+
+```bash
+brew trust jundot/omlx
+brew services start omlx
+```
+
+Skip the trust step and you'll hit `Refusing to load formula jundot/omlx/omlx from untrusted tap jundot/omlx`.
+
 ## Scripts
 
 | Script | What it does |
