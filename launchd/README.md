@@ -1,6 +1,6 @@
 # launchd
 
-A small helper for scheduling local jobs on macOS with launchd, and the reasoning for using it over cron.
+A small helper for scheduling local jobs on macOS with launchd, and the reasoning for using it over cron. For the shape of the job itself — gather, judge once with a local model, deliver, on a timer — and the gotchas that cost real time, see [`how-it-works.md`](how-it-works.md).
 
 ## Why launchd instead of cron
 
