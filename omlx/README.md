@@ -27,10 +27,9 @@ Skip the trust step and you'll hit `Refusing to load formula jundot/omlx/omlx fr
 
 `start-omlx.sh` runs `omlx serve` with these, all overridable via env vars:
 
-- `--max-process-memory 90%` — let it use most of the unified memory. On a 128GB machine that headroom is the point: an inference server, a transcription model, and warm caches all stay resident.
-- `--hot-cache-max-size 20GB` — the RAM tier of the KV cache before it spills to SSD.
+- `--hot-cache-max-size 20GB` — the RAM tier of the KV cache. Default is `0` (disabled), so this is the bump that actually turns hot caching on.
 - `--paged-ssd-cache-dir` — the cold tier. This is the feature I came for: a returning prompt prefix restores from disk instead of recomputing, dropping time-to-first-token on long contexts from tens of seconds to a couple.
-- `--max-concurrent-requests 1` — I'm one person. Batching buys nothing; serial requests keep latency predictable.
+- `--max-concurrent-requests 1` — I'm one person. Default is 8. Batching buys nothing for a single user; serial requests keep latency predictable.
 
 ## Environment
 
