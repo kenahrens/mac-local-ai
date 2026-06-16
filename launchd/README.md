@@ -42,3 +42,14 @@ launchctl bootout gui/$(id -u)/<label> && rm ~/Library/LaunchAgents/<label>.plis
 ./make-job.sh --label com.example.hello --interval 60 -- "$PWD/examples/hello-job.sh"
 sleep 65 && cat ~/.local/share/com.example.hello/stdout.log
 ```
+
+## Always-on, not scheduled
+
+Sometimes you want a LaunchAgent that just stays running, not one that fires on a timer. [`keep-awake.plist`](keep-awake.plist) is the example I use: it runs `caffeinate -s` so the machine doesn't sleep, which is how I keep long-running local jobs from getting interrupted.
+
+```bash
+cp keep-awake.plist ~/Library/LaunchAgents/com.kenahrens.keep-awake.plist
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.kenahrens.keep-awake.plist
+```
+
+`RunAtLoad` + `KeepAlive` together mean it starts immediately and restarts if it ever dies. Same launchd primitives `make-job.sh` uses for scheduled work, just without a schedule block.
