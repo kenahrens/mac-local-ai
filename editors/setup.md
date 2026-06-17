@@ -20,11 +20,13 @@ Three things stay consistent across all four editors: the **AGENTS.md** instruct
 
 - **AI:** Copilot, or **Continue** for local models. Use `continue/config.yaml`.
 - **MCP:** `.vscode/mcp.json`. Root key `servers`, each with `"type": "stdio"` — copy `mcp/examples/vscode/mcp.json`.
+- **Quick install of Continue:** `./install-continue.sh` (installs Continue in VS Code and/or VSCodium, lays down `~/.continue/config.yaml` and `~/.continue/mcpServers/*.yaml` from the canonical sources, backs up any existing config before overwriting).
 
 ## VSCodium
 
-- **AI:** **Continue** (open-vsx). Copilot is not available — it's a Microsoft-proprietary extension that won't install in VSCodium. This is the whole reason the AI layer is Continue here rather than Copilot.
+- **AI:** **Continue** (open-vsx). Copilot is not available because it's a Microsoft-proprietary extension that won't install in VSCodium. This is the whole reason the AI layer is Continue here rather than Copilot.
 - **MCP:** same as VS Code (`.vscode/mcp.json`, `servers`).
+- **Quick install:** same `./install-continue.sh` covers VSCodium too.
 
 ## Zed
 
