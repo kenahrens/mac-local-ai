@@ -70,10 +70,18 @@ fi
 
 # 3) Lay down the MCP servers from the canonical roster. Continue reads one
 #    YAML per server from ~/.continue/mcpServers/.
+#
+#    Each command runs through `/bin/zsh -ic` so the subprocess inherits the
+#    user's interactive shell environment (PATH set up by Homebrew, fnm/nvm
+#    initialization, etc.). VS Code and VSCodium launched from Finder or
+#    Spotlight do NOT have Homebrew on PATH by default, so bare `uvx` or `npx`
+#    fails with a hard-to-diagnose "failed to connect" error. The shell wrapper
+#    fixes that uniformly; the ~50 ms shell-spawn overhead is negligible per
+#    MCP request.
 if [ -f "$MCP_ROSTER" ]; then
   mkdir -p "$CONTINUE_HOME/mcpServers"
   python3 - "$MCP_ROSTER" "$CONTINUE_HOME/mcpServers" <<'PY'
-import json, os, sys
+import json, os, shlex, sys
 roster_path, out_dir = sys.argv[1], sys.argv[2]
 with open(roster_path) as f:
     roster = json.load(f)
@@ -84,15 +92,18 @@ for name, spec in servers.items():
     args = spec.get("args", [])
     if not cmd:
         continue
-    args_yaml = "\n".join(f"      - {repr(a)}" for a in args)
+    # Compose the original command line and pass it to zsh -ic so the
+    # subprocess sees the user's interactive shell PATH.
+    inner = " ".join(shlex.quote(s) for s in [cmd, *args])
     body = f"""name: {name}
 version: 0.0.1
 schema: v1
 mcpServers:
   - name: {name}
-    command: {cmd}
+    command: /bin/zsh
     args:
-{args_yaml}
+      - "-ic"
+      - "exec {inner}"
 """
     path = os.path.join(out_dir, f"{name}.yaml")
     with open(path, "w") as f:
