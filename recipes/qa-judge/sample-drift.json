@@ -1,0 +1,45 @@
+{
+  "summary": {
+    "total_requests": 7,
+    "match_pct": 71.4,
+    "endpoint_count": 2
+  },
+  "drift": [
+    {
+      "endpoint": "GET /api/account/7",
+      "field": "http.res.body.balance_cents",
+      "recorded": "421900",
+      "observed": "0"
+    },
+    {
+      "endpoint": "GET /api/account/7",
+      "field": "http.res.body.tier",
+      "recorded": "enterprise",
+      "observed": "enterprise"
+    },
+    {
+      "endpoint": "GET /api/account/7",
+      "field": "http.res.status",
+      "recorded": "200",
+      "observed": "500"
+    },
+    {
+      "endpoint": "GET /api/account/7",
+      "field": "http.res.headers.Date",
+      "recorded": "Tue, 16 Jun 2026 16:30:43 GMT",
+      "observed": "Tue, 16 Jun 2026 17:02:11 GMT"
+    },
+    {
+      "endpoint": "GET /api/account/7",
+      "field": "http.res.headers.Content-Length",
+      "recorded": "84",
+      "observed": "82"
+    },
+    {
+      "endpoint": "GET /api/health",
+      "field": "http.res.body.request_id",
+      "recorded": "8a4c3e1f-7b2a-4d9c-9f8e-1a2b3c4d5e6f",
+      "observed": "9d5e2f6c-1a8b-4e7d-8c2f-6e5d4c3b2a1f"
+    }
+  ]
+}
