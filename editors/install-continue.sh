@@ -71,46 +71,66 @@ fi
 # 3) Lay down the MCP servers from the canonical roster. Continue reads one
 #    YAML per server from ~/.continue/mcpServers/.
 #
-#    Each command runs through `/bin/zsh -ic` so the subprocess inherits the
-#    user's interactive shell environment (PATH set up by Homebrew, fnm/nvm
-#    initialization, etc.). VS Code and VSCodium launched from Finder or
-#    Spotlight do NOT have Homebrew on PATH by default, so bare `uvx` or `npx`
-#    fails with a hard-to-diagnose "failed to connect" error. The shell wrapper
-#    fixes that uniformly; the ~50 ms shell-spawn overhead is negligible per
-#    MCP request.
+#    Resolve the command to an absolute path before writing. macOS GUI apps
+#    (VS Code, VSCodium launched from Finder/Spotlight) inherit a stripped-
+#    down PATH that doesn't include Homebrew or fnm/nvm; a bare `uvx` or `npx`
+#    in the yaml fails with a hard-to-diagnose "Failed to connect" error.
+#    Using absolute paths avoids that entirely. We resolve them through a
+#    login + interactive zsh so the user's shell init (Homebrew shellenv,
+#    fnm setup) is in scope; if that fails we fall back to plain `command`,
+#    which will at least be correct if the user launches the editor from a
+#    terminal.
+resolve_path() {
+  local cmd="$1"
+  # Special-case node toolchain via fnm's stable default-alias symlink.
+  if [ "$cmd" = "npx" ] || [ "$cmd" = "node" ]; then
+    local fnm_path="$HOME/.local/share/fnm/aliases/default/bin/$cmd"
+    if [ -x "$fnm_path" ]; then echo "$fnm_path"; return; fi
+  fi
+  # Otherwise ask an interactive shell where it lives.
+  local resolved
+  resolved="$(/bin/zsh -ic "command -v $cmd" 2>/dev/null | tail -1)"
+  if [ -n "$resolved" ] && [ -x "$resolved" ]; then echo "$resolved"; return; fi
+  echo "$cmd"  # last-resort fallback
+}
+
 if [ -f "$MCP_ROSTER" ]; then
   mkdir -p "$CONTINUE_HOME/mcpServers"
-  python3 - "$MCP_ROSTER" "$CONTINUE_HOME/mcpServers" <<'PY'
-import json, os, shlex, sys
-roster_path, out_dir = sys.argv[1], sys.argv[2]
-with open(roster_path) as f:
-    roster = json.load(f)
-servers = roster.get("mcpServers", {})
+  # Resolve each server's command to an absolute path in shell, then pipe the
+  # roster + the resolutions into python to emit the yaml.
+  RESOLUTIONS="$(mktemp)"
+  python3 -c "import json,sys; [print(n, s.get('command','')) for n,s in json.load(open('$MCP_ROSTER')).get('mcpServers',{}).items()]" \
+    | while read -r name cmd; do
+        echo "$name $(resolve_path "$cmd")" >> "$RESOLUTIONS"
+      done
+
+  python3 - "$MCP_ROSTER" "$CONTINUE_HOME/mcpServers" "$RESOLUTIONS" <<'PY'
+import json, os, sys
+roster_path, out_dir, resolutions_path = sys.argv[1], sys.argv[2], sys.argv[3]
+roster = json.load(open(roster_path))
+resolved = {}
+for line in open(resolutions_path):
+    parts = line.strip().split(maxsplit=1)
+    if len(parts) == 2: resolved[parts[0]] = parts[1]
 written = []
-for name, spec in servers.items():
-    cmd = spec.get("command")
+for name, spec in roster.get("mcpServers", {}).items():
+    cmd = resolved.get(name) or spec.get("command")
     args = spec.get("args", [])
-    if not cmd:
-        continue
-    # Compose the original command line and pass it to zsh -ic so the
-    # subprocess sees the user's interactive shell PATH.
-    inner = " ".join(shlex.quote(s) for s in [cmd, *args])
+    if not cmd: continue
+    args_yaml = "".join(f"      - {repr(a)}\n" for a in args)
     body = f"""name: {name}
 version: 0.0.1
 schema: v1
 mcpServers:
   - name: {name}
-    command: /bin/zsh
+    command: {cmd}
     args:
-      - "-ic"
-      - "exec {inner}"
-"""
-    path = os.path.join(out_dir, f"{name}.yaml")
-    with open(path, "w") as f:
-        f.write(body)
+{args_yaml}"""
+    open(os.path.join(out_dir, f"{name}.yaml"), "w").write(body)
     written.append(name)
 print("  wrote MCP servers:", ", ".join(written))
 PY
+  rm -f "$RESOLUTIONS"
   say "MCP servers under $CONTINUE_HOME/mcpServers/"
 fi
 
