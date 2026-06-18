@@ -9,15 +9,6 @@
         "."
       ]
     },
-    "git": {
-      "type": "stdio",
-      "command": "uvx",
-      "args": [
-        "mcp-server-git",
-        "--repository",
-        "."
-      ]
-    },
     "fetch": {
       "type": "stdio",
       "command": "uvx",
