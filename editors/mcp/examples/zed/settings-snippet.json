@@ -9,15 +9,6 @@
         "."
       ]
     },
-    "git": {
-      "source": "custom",
-      "command": "uvx",
-      "args": [
-        "mcp-server-git",
-        "--repository",
-        "."
-      ]
-    },
     "fetch": {
       "source": "custom",
       "command": "uvx",

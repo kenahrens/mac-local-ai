@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Copy this into the root of a project as `AGENTS.md`. Cursor and Zed read it natively; Continue reads it in VS Code / VSCodium. One instructions file, every editor.
+Copy this into the root of a project as `AGENTS.md`. Cursor and Zed read it natively. VS Code / VSCodium AI extensions that support the convention pick it up too. One instructions file, every editor that supports it.
 
 ## Project
 

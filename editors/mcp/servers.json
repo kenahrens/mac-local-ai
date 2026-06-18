@@ -1,5 +1,5 @@
 {
-  "_comment": "Canonical MCP server roster. Edit this one file; run ./generate.py (or the editor installers) to emit each editor's format. Keep this set to servers that work in ANY workspace, even non-git ones. The git server is intentionally NOT in this default because mcp-server-git crashes on startup if the open folder isn't a git repo, which Continue surfaces as 'Failed to connect to git'. To enable it for a specific workspace, drop a yaml file into ~/.continue/mcpServers/git.yaml with: command /opt/homebrew/bin/uvx, args [mcp-server-git, --repository, .]",
+  "_comment": "Canonical MCP server roster. Edit this one file; run ./generate.py to emit each editor's format into examples/. Keep this set to servers that work in ANY workspace, even non-git ones. The git server is intentionally NOT in this default because mcp-server-git crashes on startup if the open folder is not a git repo, which most MCP clients surface as 'Failed to connect to git'. To enable it for a specific workspace, add it to your editor's MCP config with: command 'uvx', args ['mcp-server-git', '--repository', '.'], and only open the editor in a real git repo.",
   "mcpServers": {
     "filesystem": {
       "command": "npx",
