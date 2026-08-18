@@ -25,7 +25,7 @@
 set -euo pipefail
 
 OMLX_URL="${OMLX_URL:-http://127.0.0.1:38010/v1}"
-OMLX_MODEL="${OMLX_MODEL:-Qwen3.6-27B-4bit}"
+OMLX_MODEL="${OMLX_MODEL:-Qwen3.8-27B-4bit}"
 NUM_CLIPS="${NUM_CLIPS:-3}"
 # Whisper model for the single transcription pass. large-v3 punctuates far more
 # reliably than turbo; sentence-ending punctuation (.!?) is what the boundary
