@@ -95,7 +95,8 @@ def take_path(identifier):
     if identifier == "latest":
         candidates = sorted(RUNS.glob("*/session.json")) if RUNS.exists() else []
         candidates = [path for path in candidates
-                      if json.loads(path.read_text()).get("purpose") != "validation"]
+                      if json.loads(path.read_text()).get("purpose") != "validation"
+                      and json.loads(path.read_text()).get("status") != "failed"]
         if not candidates:
             raise ValueError("No sandbox yet. Run: ai-sandbox")
         return candidates[-1].parent
@@ -112,6 +113,8 @@ def session(identifier):
     data = json.loads((path / "session.json").read_text())
     if data["status"] == "removed":
         raise ValueError("This sandbox was removed. Its workspace and recordings are retained.")
+    if data["status"] == "failed":
+        raise ValueError("Setup for this sandbox failed. Run ai-sandbox to create a new one.")
     return path, data
 
 
@@ -269,11 +272,6 @@ def new(language, no_open):
             "proxymock_setup": "agent-installed",
             "status": "initializing"}
     save(path, data)
-    data["mock_lab_commit"] = seed_mock_lab(name)
-    save(path, data)
-    run("sbx", "exec", name, "bash", "-c", "test -d \"$1\"", "bash", data["app"])
-    configure(identifier)
-    ensure_agents(identifier)
     check = r'''set -eu
 if command -v proxymock >/dev/null || [[ -e /usr/local/bin/proxymock-real ]]; then
     echo "The template contains proxymock; rebuild the clean template." >&2
@@ -288,7 +286,19 @@ for skills in "$HOME/.claude/skills" "$HOME/.agents/skills" "$HOME/.codex/skills
     fi
 done
 '''
-    run("sbx", "exec", name, "bash", "-c", check)
+    try:
+        data["mock_lab_commit"] = seed_mock_lab(name)
+        save(path, data)
+        run("sbx", "exec", name, "bash", "-c", "test -d \"$1\"", "bash", data["app"])
+        configure(identifier)
+        ensure_agents(identifier)
+        run("sbx", "exec", name, "bash", "-c", check)
+    except BaseException:
+        # Don't leave a half-configured guest for "latest" to pick up.
+        subprocess.run(["sbx", "rm", name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        data["status"] = "failed"
+        save(path, data)
+        raise
     data = json.loads((path / "session.json").read_text())
     data["clean_start_verified"] = True
     data["status"] = "ready"

@@ -17,7 +17,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 COPY demo.bashrc /etc/demo.bashrc
 
-ENV PATH="/home/agent/.local/bin:/home/agent/.speedscale:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
+ENV PATH="/home/agent/.local/bin:/home/agent/.speedscale:${PATH}" \
     BASH_ENV=/etc/sandbox-persistent.sh \
     SPEEDSCALE_APP_URL=dev.speedscale.com
 LABEL com.docker.sandboxes="templates" com.docker.sandboxes.flavor="shell"
