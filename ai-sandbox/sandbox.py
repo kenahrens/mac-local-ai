@@ -108,12 +108,12 @@ def take_path(identifier):
     return path
 
 
-def session(identifier):
+def session(identifier, allow_failed=False):
     path = take_path(identifier)
     data = json.loads((path / "session.json").read_text())
     if data["status"] == "removed":
         raise ValueError("This sandbox was removed. Its workspace and recordings are retained.")
-    if data["status"] == "failed":
+    if data["status"] == "failed" and not allow_failed:
         raise ValueError("Setup for this sandbox failed. Run ai-sandbox to create a new one.")
     return path, data
 
@@ -259,19 +259,13 @@ def new(language, no_open):
     workspace = Path.cwd().resolve()
     (path / "recordings").mkdir(parents=True)
     name = "speedscale-ai-sandbox-" + identifier
-    run("sbx", "create", "--name", name, "--template", image(language),
-        "--pull", "never", "--skills", "off", "--cpus", "2", "--memory", "4g",
-        "--publish", "8080", "--publish", "4143", "--publish", "7788", "shell", workspace,
-        str(SPEEDSCALE_CONFIG) + ":ro")
     data = {"id": identifier, "sandbox": name, "language": language,
             "purpose": "recording",
             "workspace": str(workspace), "app": str(GUEST_MOCK_LAB / "languages" / language),
-            "image": image(language), "image_id": output("docker", "image", "inspect", image(language),
-                                                         "--format", "{{.Id}}"),
+            "image": image(language),
             "speedscale_config": str(SPEEDSCALE_CONFIG), "app_url": APP_URL,
             "proxymock_setup": "agent-installed",
             "status": "initializing"}
-    save(path, data)
     check = r'''set -eu
 if command -v proxymock >/dev/null || [[ -e /usr/local/bin/proxymock-real ]]; then
     echo "The template contains proxymock; rebuild the clean template." >&2
@@ -286,23 +280,42 @@ for skills in "$HOME/.claude/skills" "$HOME/.agents/skills" "$HOME/.codex/skills
     fi
 done
 '''
+    create_started = False
     try:
+        save(path, data)
+        create_started = True
+        run("sbx", "create", "--name", name, "--template", image(language),
+            "--pull", "never", "--skills", "off", "--cpus", "2", "--memory", "4g",
+            "--publish", "8080", "--publish", "4143", "--publish", "7788", "shell", workspace,
+            str(SPEEDSCALE_CONFIG) + ":ro")
+        data["image_id"] = output("docker", "image", "inspect", image(language), "--format", "{{.Id}}")
         data["mock_lab_commit"] = seed_mock_lab(name)
         save(path, data)
         run("sbx", "exec", name, "bash", "-c", "test -d \"$1\"", "bash", data["app"])
         configure(identifier)
         ensure_agents(identifier)
         run("sbx", "exec", name, "bash", "-c", check)
-    except BaseException:
-        # Don't leave a half-configured guest for "latest" to pick up.
-        subprocess.run(["sbx", "rm", name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        data["status"] = "failed"
+        data = json.loads((path / "session.json").read_text())
+        data["clean_start_verified"] = True
+        data["status"] = "ready"
         save(path, data)
+    except BaseException:
+        # Exclude failed setup from "latest" even if guest removal fails.
+        data["status"] = "failed"
+        try:
+            save(path, data)
+        except OSError as error:
+            print(f"Could not save failed session {identifier}: {error}", file=sys.stderr)
+        if create_started:
+            try:
+                cleanup = subprocess.run(["sbx", "rm", "--force", name], capture_output=True, text=True)
+                if cleanup.returncode:
+                    raise ValueError(cleanup.stderr.strip() or cleanup.stdout.strip()
+                                     or f"sbx rm exited with status {cleanup.returncode}")
+            except (OSError, subprocess.SubprocessError, ValueError) as error:
+                print(f"Could not remove sandbox {name}: {error}\n"
+                      f"Retry with: ai-sandbox remove {identifier}", file=sys.stderr)
         raise
-    data = json.loads((path / "session.json").read_text())
-    data["clean_start_verified"] = True
-    data["status"] = "ready"
-    save(path, data)
     print(f"Ready: {identifier}\nWorkspace: {workspace}\nMock-lab: {data['app']}\nRecordings: {path / 'recordings'}", flush=True)
     run("sbx", "ports", name)
     print("Run claude or codex inside the recorded shell to start an agent.", flush=True)
@@ -428,7 +441,7 @@ def main():
             data = json.loads(state.read_text())
             print(f"{data['id']}  {data['status']}  {data['sandbox']}")
     else:
-        path, data = session(args.take)
+        path, data = session(args.take, allow_failed=args.action == "remove")
         run("sbx", "stop" if args.action == "stop" else "rm", data["sandbox"])
         data["status"] = "stopped" if args.action == "stop" else "removed"
         save(path, data)

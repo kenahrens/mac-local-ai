@@ -49,7 +49,7 @@ ai-sandbox stop
 ai-sandbox list
 ```
 
-`terminal` opens another recorded shell in the newest recording session, including a stopped session. Add a session ID to select an older one. Sessions marked as validation are excluded from the default selection. Stopping retains the guest state and its account sign-ins. `ai-sandbox remove` deletes the guest while retaining host recordings and mounted workspace files. After removing the newest session, create another or supply an older session ID.
+`terminal` opens another recorded shell in the newest recording session, including a stopped session. Add a session ID to select an older one. Sessions marked as validation are excluded from the default selection. Stopping retains the guest state and its account sign-ins. `ai-sandbox remove` deletes the guest while retaining host recordings and mounted workspace files. After removing the newest session, create another or supply an older session ID. Failed setup removes its guest automatically and is excluded from the default selection. If removal fails, the launcher prints the error and an `ai-sandbox remove <session-id>` command to retry.
 
 The app, capture ingress and proxymock web ports are published to random loopback ports on the host. `ports` shows the mapping. Guest terminals use their normal localhost ports.
 
@@ -62,11 +62,13 @@ ai-sandbox --language java
 ai-sandbox video /absolute/path/to/recording.cast
 ```
 
-Each runtime creates a separate sandbox. The image includes only the selected runtime and basic shell utilities, including make. Rebuild an image with `ai-sandbox build node` or the relevant runtime name. The first build requires downloads and available Docker disk space. Node is the validated runtime; the other profiles have not completed end-to-end sandbox validation.
+Each runtime creates a separate sandbox. The image includes only the selected runtime and basic shell utilities, including make. Rebuild an image with `ai-sandbox build node` or the relevant runtime name. The first build requires downloads and available Docker disk space. Node is the validated runtime. Go and Java images passed offline compilation and execution checks; the other profiles have not completed end-to-end sandbox validation.
 
 The `.cast` playback and `.txt` transcript are retained under the launcher's local `runs` directory. `video` exports a silent H.264 MP4 beside the cast. Record narration separately. Nothing is uploaded automatically.
 
 ## Validation and licensing
+
+Run the setup-failure regression tests from the repository root with `python3 -m unittest discover -s ai-sandbox -p 'test_*.py'`. These checks use disposable local metadata and simulated guest commands; they require no Docker daemon or account credentials.
 
 The original Node launcher was checked with fresh sandbox creation, current-directory mounting, read-only configuration, authenticated Claude installation of proxymock, dev traffic capture, native mocking and replay, terminal playback, transcript conversion and MP4 export. Authenticated Codex inference remains untested. The portable source export adds configuration selection and a relative launcher. It passed local JSON/YAML checks and a fresh Node sandbox launch from a directory containing spaces, including agent installation, clean-start verification, recorded terminal output and reopening with the saved dev configuration despite conflicting host overrides. Other API hosts have not been exercised end to end. The exact unmodified Speedscale documentation prompt has not been qualified by those earlier custom-prompt tests.
 
