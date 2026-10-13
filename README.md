@@ -12,6 +12,7 @@ Most of this is glue around other people's open source. The engines are theirs. 
 - **[`launchd/`](launchd/)** — scheduling local jobs with launchd instead of cron, and why.
 - **[`editors/`](editors/)** — keeping Zed, VSCodium, VS Code, and Cursor consistent on `AGENTS.md`, MCP servers, and the local model endpoints.
 - **[`tools/`](tools/)** — small standalone scripts: an AI-writing-tells linter, an ephemeral local-model chat, and Whisper transcription.
+- **[`ai-sandbox/`](ai-sandbox/)**: clean Docker Sandboxes for coding agents and Speedscale videos, with automatic terminal recordings and MP4 export.
 
 ## What I run (M5, 128GB)
 
@@ -21,4 +22,4 @@ Most of this is glue around other people's open source. The engines are theirs. 
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE). The copied credential helper in `ai-sandbox/` retains Apache-2.0; see its [NOTICE](ai-sandbox/NOTICE).

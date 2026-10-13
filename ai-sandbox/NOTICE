@@ -1,0 +1,7 @@
+ai-sandbox
+
+The launcher and environment setup follow this repository's MIT license.
+
+speedscale-apikey.sh is an unmodified copy of skills/install-speedscale/scripts/apikey.sh from https://github.com/speedscale/skills at commit 9e3672d6dfd5a7376f21fb0f5ddf77708fb01bf6. That helper is distributed under the Apache License, Version 2.0, retained in LICENSE-APACHE-2.0.
+
+Docker, runtime images, coding agents and proxymock are obtained separately from their official sources. Their binaries and configuration files are not included in this repository.

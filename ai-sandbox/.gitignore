@@ -1,0 +1,9 @@
+runs/
+validation/
+__pycache__/
+*.py[cod]
+*.cast
+*.mp4
+*.gif
+.env
+.env.*

@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+set -eu
+launcher_dir=$(python3 -c 'from pathlib import Path; import sys; print(Path(sys.argv[1]).resolve().parent)' "$0")
+exec python3 "$launcher_dir/sandbox.py" "$@"
