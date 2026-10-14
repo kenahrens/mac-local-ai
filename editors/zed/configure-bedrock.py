@@ -9,6 +9,13 @@ import stat
 import tempfile
 
 
+MANTLE_LABELS = {
+    "gpt-5.6-sol": "GPT-5.6 Sol",
+    "gpt-5.6-terra": "GPT-5.6 Terra",
+    "gpt-5.6-luna": "GPT-5.6 Luna",
+}
+
+
 MODEL_SETTINGS = (
     "default_model",
     "inline_assistant_model",
@@ -25,14 +32,39 @@ def configure(settings, profile, region, model):
     bedrock.update(
         authentication_method="named_profile", profile=profile, region=region
     )
-    agent = settings.setdefault("agent", {})
+    native_id = model.removeprefix("openai.")
     selection = {"provider": "amazon-bedrock", "model": model}
+    if native_id in MANTLE_LABELS:
+        model = f"openai.{native_id}"
+        models = bedrock.setdefault("mantle_available_models", [])
+        entry = next((item for item in models if item.get("name") == model), None)
+        if entry is None:
+            entry = {"name": model}
+            models.append(entry)
+        entry.update(
+            display_name=f"AWS Bedrock - {MANTLE_LABELS[native_id]}",
+            max_tokens=1_000_000,
+            max_output_tokens=128_000,
+            protocol="responses",
+            supports_tools=True,
+            supports_images=True,
+            supports_thinking=True,
+        )
+        selection.update(model=model, enable_thinking=True, effort="medium")
+    agent = settings.setdefault("agent", {})
     for key in MODEL_SETTINGS:
         agent[key] = selection.copy()
     favorites = agent.setdefault("favorite_models", [])
-    if not any(item.get("provider") == "amazon-bedrock" and item.get("model") == model
-               for item in favorites):
+    if native_id in MANTLE_LABELS:
+        favorites[:] = [item for item in favorites if not (
+            item.get("provider") == "amazon-bedrock" and item.get("model") == native_id
+        )]
+    favorite = next((item for item in favorites if
+                     item.get("provider") == "amazon-bedrock" and item.get("model") == model), None)
+    if favorite is None:
         favorites.append(selection.copy())
+    else:
+        favorite.update(selection)
 
 
 def main():
@@ -72,7 +104,11 @@ def main():
                 os.unlink(temporary)
 
     print(f"{'Applied' if args.apply else 'Preview'}: {path}")
-    print(f"AWS profile: {args.profile}; region: {args.region}; model: {args.model}")
+    selected_model = settings["agent"]["default_model"]["model"]
+    print(f"AWS profile: {args.profile}; region: {args.region}; model: {selected_model}")
+    native_id = args.model.removeprefix("openai.")
+    if native_id in MANTLE_LABELS:
+        print(f"Picker label: AWS Bedrock - {MANTLE_LABELS[native_id]}")
     print("Zed agent and helper models use Bedrock; existing providers and MCP settings are preserved.")
     if not args.apply:
         print("Add --apply to save these settings.")
