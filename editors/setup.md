@@ -32,6 +32,24 @@ Three things stay consistent across all four editors: the **AGENTS.md** instruct
 - **MCP:** `settings.json` under `context_servers`. Copy `mcp/examples/zed/settings-snippet.json`.
 - **Instructions:** reads `AGENTS.md`.
 
+### AWS Bedrock in Zed
+
+Use Zed's built-in agent with the native Bedrock provider. Configure an existing AWS SSO profile, then preview and apply the settings merge from this repository's root:
+
+```sh
+aws sso login --profile my-bedrock-profile
+python3 editors/zed/configure-bedrock.py --profile my-bedrock-profile --region us-east-1
+python3 editors/zed/configure-bedrock.py --profile my-bedrock-profile --region us-east-1 --apply
+```
+
+The default model is `openai.gpt-5.6-sol`; override it with `--model` for a model supported by your Zed version and available to your AWS account in the selected region. The helper sets the main agent, inline assistant, commit messages, thread summaries, compaction, and subagents to the same Bedrock model and adds it to favorites. Existing local providers, external agents, MCP connections, and permissions are preserved. Edit prediction has separate provider settings and is not changed by this helper.
+
+The helper merges into `~/.config/zed/settings.json` without copying credentials. Use `--settings PATH` to preview or apply to another file. It accepts strict JSON and refuses JSONC comments or trailing commas without changing the file. The MCP installers merge their own entries and preserve these model settings.
+
+Zed reloads settings automatically. Open a new **Zed Agent** thread and choose the model under **Amazon Bedrock** in the picker. Existing OpenCode, Codex, Claude, and other external-agent threads keep their own provider configuration. Verify a short prompt in an empty folder before using customer files. An initial successful request does not verify renewal after SSO expiry.
+
+The AWS SDK renews temporary credentials while the underlying SSO login remains valid. When that login expires, run `aws sso login --profile my-bedrock-profile` again. If Zed retains an authentication error after successful login, retry the prompt and restart Zed if necessary; do not replace SSO with copied temporary credentials. See [Zed's Bedrock documentation](https://zed.dev/docs/ai/use-a-gateway#amazon-bedrock) and [AWS's SSO refresh lifecycle](https://docs.aws.amazon.com/sdkref/latest/guide/understanding-sso.html).
+
 ## The gotchas
 
 - **Three different root keys** for the same servers: `mcpServers` (Cursor), `servers` (VS Code/VSCodium), `context_servers` (Zed). You can't share one file, hence the generator.
