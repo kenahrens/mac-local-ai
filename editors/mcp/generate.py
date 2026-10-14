@@ -25,5 +25,4 @@ vscode = {name: {"type": "stdio", **cfg} for name, cfg in servers.items()}
 write_json("vscode/mcp.json", {"servers": vscode})
 
 # Zed: settings.json snippet (root key: context_servers)
-zed = {name: {"source": "custom", **cfg} for name, cfg in servers.items()}
-write_json("zed/settings-snippet.json", {"context_servers": zed})
+write_json("zed/settings-snippet.json", {"context_servers": servers})

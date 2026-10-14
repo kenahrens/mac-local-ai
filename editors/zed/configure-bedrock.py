@@ -26,11 +26,11 @@ def configure(settings, profile, region, model):
         authentication_method="named_profile", profile=profile, region=region
     )
     agent = settings.setdefault("agent", {})
-    selection = {"provider": "bedrock", "model": model}
+    selection = {"provider": "amazon-bedrock", "model": model}
     for key in MODEL_SETTINGS:
         agent[key] = selection.copy()
     favorites = agent.setdefault("favorite_models", [])
-    if not any(item.get("provider") == "bedrock" and item.get("model") == model
+    if not any(item.get("provider") == "amazon-bedrock" and item.get("model") == model
                for item in favorites):
         favorites.append(selection.copy())
 
@@ -39,7 +39,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--profile", required=True, help="Existing AWS SSO profile")
     parser.add_argument("--region", required=True, help="Bedrock model's AWS region")
-    parser.add_argument("--model", default="openai.gpt-5.6-sol")
+    parser.add_argument("--model", default="gpt-5.6-sol")
     parser.add_argument("--settings", type=Path,
                         default=Path.home() / ".config/zed/settings.json")
     parser.add_argument("--apply", action="store_true", help="Write the merged settings")

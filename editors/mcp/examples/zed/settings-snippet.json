@@ -1,7 +1,6 @@
 {
   "context_servers": {
     "filesystem": {
-      "source": "custom",
       "command": "npx",
       "args": [
         "-y",
@@ -10,7 +9,6 @@
       ]
     },
     "fetch": {
-      "source": "custom",
       "command": "uvx",
       "args": [
         "mcp-server-fetch"
