@@ -1,6 +1,7 @@
 import contextlib
 import io
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -164,6 +165,93 @@ class FailedSetupTests(unittest.TestCase):
         self.assertEqual(self.guests, {state['sandbox']})
         self.assertFalse(self.removals)
         self.assertEqual(sandbox.take_path('latest').name, identifier)
+
+
+class AssistantTests(unittest.TestCase):
+    def setUp(self):
+        scratch = tempfile.TemporaryDirectory()
+        self.addCleanup(scratch.cleanup)
+        self.enter(patch.object(sandbox, 'RUNS', Path(scratch.name)))
+        self.path = sandbox.RUNS / 'existing-node-session'
+        (self.path / 'recordings').mkdir(parents=True)
+        self.data = {'id': self.path.name, 'sandbox': 'fixture-guest', 'status': 'ready',
+                     'agents': ['claude', 'codex'], 'language': 'node',
+                     'proxymock_setup': 'agent-installed', 'workspace': '/fixture/app', 'app': '/fixture/mock-lab/languages/node',
+                     'speedscale_config': '/fixture/dev.yaml', 'shell_setup': sandbox.SHELL_SETUP}
+        sandbox.save(self.path, self.data)
+        self.enter(contextlib.redirect_stdout(io.StringIO()))
+
+    def enter(self, manager):
+        result = manager.__enter__()
+        self.addCleanup(manager.__exit__, None, None, None)
+        return result
+
+    def test_all_assistant_commands_select_a_recorded_session(self):
+        for name in sandbox.AGENTS:
+            with self.subTest(name=name), patch.object(sandbox.shutil, 'which', return_value='/fixture/bin'), \
+                    patch.object(sandbox, 'agent') as agent, \
+                    patch.object(sys, 'argv', ['ai-sandbox', name, self.path.name]):
+                sandbox.main()
+                agent.assert_called_once_with(self.path.name, name)
+
+    def test_assistants_launch_through_terminal_recording(self):
+        for name in sandbox.AGENTS:
+            with self.subTest(name=name), patch.object(sandbox, 'ensure_agents'), \
+                    patch.object(sandbox, 'configure'), patch.object(sandbox, 'terminal') as terminal:
+                sandbox.agent(self.path.name, name)
+                command = terminal.call_args.kwargs['command']
+                self.assertIn('exec ' + name, command)
+                if name == 'claude':
+                    self.assertIn('--strict-mcp-config', command)
+                elif name == 'codex':
+                    self.assertIn('login --device-auth', command)
+
+    def test_failed_install_keeps_previous_assistant_manifest(self):
+        failure = subprocess.CalledProcessError(1, ['sbx', 'exec'])
+        with patch.object(sandbox, 'run', side_effect=[None, failure]), self.assertRaises(subprocess.CalledProcessError):
+            sandbox.ensure_agents(self.path.name)
+        self.assertEqual(json.loads((self.path / 'session.json').read_text()), self.data)
+
+    def test_reopening_old_session_installs_missing_assistants(self):
+        with patch.object(sandbox, 'ensure_agents') as install, patch.object(sandbox, 'configure') as configure, \
+                patch.object(sandbox, 'credential_env', return_value={}), \
+                patch.object(sandbox.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0)):
+            sandbox.terminal(self.path.name)
+        install.assert_called_once_with(self.path.name)
+        configure.assert_called_once_with(self.path.name)
+
+
+class InstallerTests(unittest.TestCase):
+    def check_version(self, installed, should_install):
+        with tempfile.TemporaryDirectory() as scratch:
+            home = Path(scratch)
+            binaries = home / '.local' / 'bin'
+            binaries.mkdir(parents=True)
+            (home / '.demo-sandbox.bashrc').write_text('')
+            def executable(path, script):
+                path.write_text('#!/bin/bash\n' + script + '\n')
+                path.chmod(0o755)
+            for name in sandbox.AGENTS:
+                executable(binaries / name, "printf '%s\\n' 'fixture-version'")
+            executable(binaries / 'opencode', "printf '%s\\n' '" + installed + "'")
+            executable(home / 'opencode-v2', "printf '%s\\n' 'opencode v2.0.30'")
+            executable(binaries / 'node', 'exit 0')
+            executable(binaries / 'curl', 'echo Unexpected download >&2; exit 1')
+            executable(binaries / 'npm', 'printf "%s\\n" "$*" >> "$HOME/npm-calls"\n'
+                       'cp "$HOME/opencode-v2" "$HOME/.local/bin/opencode"')
+            env = dict(os.environ, HOME=str(home), PATH=str(binaries) + ':/usr/bin:/bin')
+            result = subprocess.run(['bash', str(sandbox.ROOT / 'install-agents.sh')],
+                                    env=env, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            calls = (home / 'npm-calls').read_text() if (home / 'npm-calls').exists() else ''
+            self.assertEqual('@opencode/cli@2' in calls, should_install)
+            self.assertIn('opencode: opencode v2.0.30', result.stdout)
+
+    def test_official_opencode_v2_version_is_accepted_without_reinstall(self):
+        self.check_version('opencode v2.0.30', False)
+
+    def test_opencode_v1_is_replaced_with_v2(self):
+        self.check_version('opencode v1.9.0', True)
 
 
 if __name__ == '__main__':

@@ -3,7 +3,7 @@ FROM ${RUNTIME_IMAGE}
 
 USER root
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    bash ca-certificates curl git jq make openssl sudo tini vim-tiny \
+    bash ca-certificates curl git jq make openssl procps sudo tini vim-tiny \
     && rm -rf /var/lib/apt/lists/* \
     && if getent passwd 1000 >/dev/null; then userdel "$(getent passwd 1000 | cut -d: -f1)"; fi \
     && if getent group 1000 >/dev/null; then groupdel "$(getent group 1000 | cut -d: -f1)"; fi \
