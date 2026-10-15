@@ -27,11 +27,14 @@ PROFILES = {
     "java": "eclipse-temurin:21-jdk-jammy",
 }
 GUEST_MOCK_LAB = Path("/home/agent/mock-lab")
-SHELL_SETUP = 7
+SHELL_SETUP = 8
+AGENTS = ("claude", "codex", "opencode", "pi", "kilo")
 AGENT_HOSTS = (
     "claude.ai:443,claude.com:443,downloads.claude.ai:443,api.anthropic.com:443,"
     "platform.claude.com:443,console.anthropic.com:443,"
-    "chatgpt.com:443,auth.openai.com:443,api.openai.com:443,releases.openai.com:443"
+    "chatgpt.com:443,auth.openai.com:443,api.openai.com:443,releases.openai.com:443,"
+    "nodejs.org:443,registry.npmjs.org:443,opencode.ai:443,api.opencode.ai:443,"
+    "models.dev:443,openrouter.ai:443,api.github.com:443,kilo.ai:443,api.kilo.ai:443,app.kilo.ai:443,auth.kilo.ai:443"
 )
 
 
@@ -126,18 +129,25 @@ def configure(identifier):
     path, data = session(identifier)
     run("sbx", "policy", "allow", "network", "--sandbox", data["sandbox"],
         f"{data.get('app_url', APP_URL)}:443,demo-api.trafficreplay.com:443,demo-api-dev.trafficreplay.com:443,downloads.speedscale.com:443,"
-        "raw.githubusercontent.com:443,github.com:443,codeload.github.com:443,docs.speedscale.com:443",
+        "raw.githubusercontent.com:443,github.com:443,codeload.github.com:443,docs.speedscale.com:443,"
+        "deb.debian.org:443,security.debian.org:443,archive.ubuntu.com:443,ports.ubuntu.com:443,security.ubuntu.com:443",
         stdout=subprocess.DEVNULL)
     command = r'''set -eu
 test -r "$1"
-if ! command -v make >/dev/null; then
+if ! command -v make >/dev/null || ! command -v ps >/dev/null; then
     for source in /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; do
         if [[ -f "$source" ]]; then
             sudo sed -i 's|http://|https://|g' "$source"
         fi
     done
-    sudo apt-get -o Acquire::https::Proxy="${HTTPS_PROXY:-DIRECT}" -o Acquire::https::Timeout=20 update -qq
-    sudo apt-get -o DPkg::Lock::Timeout=60 -o Acquire::https::Proxy="${HTTPS_PROXY:-DIRECT}" install -y --no-install-recommends make
+    for attempt in {1..12}; do
+        if sudo apt-get -o Acquire::https::Proxy="${HTTPS_PROXY:-DIRECT}" -o Acquire::https::Timeout=20 update -qq; then
+            break
+        fi
+        [[ "$attempt" != 12 ]] || exit 1
+        sleep 5
+    done
+    sudo apt-get -o DPkg::Lock::Timeout=60 -o Acquire::https::Proxy="${HTTPS_PROXY:-DIRECT}" install -y --no-install-recommends make procps
     sudo rm -rf /var/lib/apt/lists/*
 fi
 if [[ ! -f "$HOME/.ai-sandbox-mcp.json" ]]; then
@@ -172,32 +182,22 @@ def ensure_agents(identifier):
     path, data = session(identifier)
     run("sbx", "policy", "allow", "network", "--sandbox", data["sandbox"], AGENT_HOSTS,
         stdout=subprocess.DEVNULL)
-    print("Preparing Claude Code and Codex inside the sandbox...", flush=True)
-    command = r'''set -eu
-scratch=$(mktemp -d)
-trap 'rm -rf "$scratch"' EXIT
-if ! command -v claude >/dev/null; then
-    curl --fail --location --silent --show-error --retry 3 https://claude.ai/install.sh -o "$scratch/claude.sh"
-    bash "$scratch/claude.sh" stable
-fi
-if ! command -v codex >/dev/null; then
-    curl --fail --location --silent --show-error --retry 3 https://chatgpt.com/codex/install.sh -o "$scratch/codex.sh"
-    CODEX_NON_INTERACTIVE=1 sh "$scratch/codex.sh"
-fi
-claude --version
-codex --version
-'''
+    print("Preparing Claude Code, Codex, OpenCode 2.x, Pi and Kilo Code inside the sandbox...", flush=True)
+    command = (ROOT / "install-agents.sh").read_text()
     run("sbx", "exec", data["sandbox"], "bash", "-c", command)
-    data["agents"] = ["claude", "codex"]
+    data["agents"] = list(AGENTS)
     save(path, data)
 
 
 def agent(identifier, name):
     ensure_agents(identifier)
     configure(identifier)
-    command = "exec claude --strict-mcp-config --mcp-config ~/.ai-sandbox-mcp.json" if name == "claude" else (
-        "codex login status >/dev/null 2>&1 || codex login --device-auth || exit $?\nexec codex"
-    )
+    if name == "claude":
+        command = "exec claude --strict-mcp-config --mcp-config ~/.ai-sandbox-mcp.json"
+    elif name == "codex":
+        command = "codex login status >/dev/null 2>&1 || codex login --device-auth || exit $?\nexec codex"
+    else:
+        command = "exec " + name
     terminal(identifier, command=command)
 
 
@@ -318,7 +318,7 @@ done
         raise
     print(f"Ready: {identifier}\nWorkspace: {workspace}\nMock-lab: {data['app']}\nRecordings: {path / 'recordings'}", flush=True)
     run("sbx", "ports", name)
-    print("Run claude or codex inside the recorded shell to start an agent.", flush=True)
+    print("Run " + ", ".join(AGENTS) + " inside the recorded shell to start an agent.", flush=True)
     print("Proxymock is not installed. Ask the agent to install the current CLI and skills.", flush=True)
     if not no_open:
         open_terminal(identifier)
@@ -338,7 +338,7 @@ def terminal(identifier, command=None, headless=False):
     path, data = session(identifier)
     if data.get("proxymock_setup") != "agent-installed":
         print("This take uses an older template. Run ai-sandbox for a clean installation demo.", flush=True)
-    if data.get("agents") != ["claude", "codex"]:
+    if data.get("agents") != list(AGENTS):
         ensure_agents(identifier)
         configure(identifier)
     elif data.get("shell_setup") != SHELL_SETUP:
@@ -403,7 +403,7 @@ def main():
         p.add_argument("language", choices=PROFILES, nargs="?", default="node")
         if action == "new":
             p.add_argument("--no-open", action="store_true")
-    for action in ("open", "terminal", "auth", "ports", "stop", "remove", "claude", "codex"):
+    for action in ("open", "terminal", "auth", "ports", "stop", "remove", *AGENTS):
         p = commands.add_parser(action)
         p.add_argument("take", nargs="?", default="latest")
         if action == "terminal":
@@ -429,7 +429,7 @@ def main():
         open_terminal(args.take)
     elif args.action == "terminal":
         terminal(args.take, args.command, args.headless)
-    elif args.action in ("claude", "codex"):
+    elif args.action in AGENTS:
         agent(args.take, args.action)
     elif args.action == "auth":
         configure(args.take)
