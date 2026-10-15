@@ -1,0 +1,227 @@
+{
+  "checked_on": "2026-10-14",
+  "region": "us-east-1",
+  "sources": [
+    "https://docs.aws.amazon.com/bedrock/latest/userguide/model-cards-openai.html",
+    "https://zed.dev/docs/ai/use-a-gateway#amazon-bedrock"
+  ],
+  "models": [
+    {
+      "discovery_id": "openai.gpt-6.1-sol",
+      "native_id": "gpt-6.1-sol",
+      "settings_key": "mantle_available_models",
+      "model": {
+        "name": "openai.gpt-6.1-sol",
+        "display_name": "AWS Bedrock - GPT-6.1 Sol",
+        "max_tokens": 1000000,
+        "max_output_tokens": 131072,
+        "protocol": "responses",
+        "supports_tools": true,
+        "supports_images": true,
+        "supports_thinking": true
+      }
+    },
+    {
+      "discovery_id": "openai.gpt-6-astra",
+      "native_id": "gpt-6-astra",
+      "settings_key": "mantle_available_models",
+      "model": {
+        "name": "openai.gpt-6-astra",
+        "display_name": "AWS Bedrock - GPT-6 Astra",
+        "max_tokens": 1050000,
+        "max_output_tokens": 128000,
+        "protocol": "responses",
+        "supports_tools": true,
+        "supports_images": true,
+        "supports_thinking": true
+      }
+    },
+    {
+      "discovery_id": "openai.gpt-6-sol",
+      "native_id": "gpt-6-sol",
+      "settings_key": "mantle_available_models",
+      "model": {
+        "name": "openai.gpt-6-sol",
+        "display_name": "AWS Bedrock - GPT-6 Sol",
+        "max_tokens": 1050000,
+        "max_output_tokens": 128000,
+        "protocol": "responses",
+        "supports_tools": true,
+        "supports_images": true,
+        "supports_thinking": true
+      }
+    },
+    {
+      "discovery_id": "openai.gpt-6-luna",
+      "native_id": "gpt-6-luna",
+      "settings_key": "mantle_available_models",
+      "model": {
+        "name": "openai.gpt-6-luna",
+        "display_name": "AWS Bedrock - GPT-6 Luna",
+        "max_tokens": 1050000,
+        "max_output_tokens": 128000,
+        "protocol": "responses",
+        "supports_tools": true,
+        "supports_images": true,
+        "supports_thinking": true
+      }
+    },
+    {
+      "discovery_id": "openai.gpt-5.6-sol",
+      "native_id": "gpt-5.6-sol",
+      "settings_key": "mantle_available_models",
+      "model": {
+        "name": "openai.gpt-5.6-sol",
+        "display_name": "AWS Bedrock - GPT-5.6 Sol",
+        "max_tokens": 1050000,
+        "max_output_tokens": 128000,
+        "protocol": "responses",
+        "supports_tools": true,
+        "supports_images": true,
+        "supports_thinking": true
+      }
+    },
+    {
+      "discovery_id": "openai.gpt-5.6-terra",
+      "native_id": "gpt-5.6-terra",
+      "settings_key": "mantle_available_models",
+      "model": {
+        "name": "openai.gpt-5.6-terra",
+        "display_name": "AWS Bedrock - GPT-5.6 Terra",
+        "max_tokens": 1050000,
+        "max_output_tokens": 128000,
+        "protocol": "responses",
+        "supports_tools": true,
+        "supports_images": true,
+        "supports_thinking": true
+      }
+    },
+    {
+      "discovery_id": "openai.gpt-5.6-luna",
+      "native_id": "gpt-5.6-luna",
+      "settings_key": "mantle_available_models",
+      "model": {
+        "name": "openai.gpt-5.6-luna",
+        "display_name": "AWS Bedrock - GPT-5.6 Luna",
+        "max_tokens": 1050000,
+        "max_output_tokens": 128000,
+        "protocol": "responses",
+        "supports_tools": true,
+        "supports_images": true,
+        "supports_thinking": true
+      }
+    },
+    {
+      "discovery_id": "openai.gpt-5.5",
+      "native_id": "gpt-5.5",
+      "settings_key": "mantle_available_models",
+      "model": {
+        "name": "openai.gpt-5.5",
+        "display_name": "AWS Bedrock - GPT-5.5",
+        "max_tokens": 1050000,
+        "max_output_tokens": 128000,
+        "protocol": "responses",
+        "supports_tools": true,
+        "supports_images": true,
+        "supports_thinking": true
+      }
+    },
+    {
+      "discovery_id": "openai.gpt-5.5-2026-04-23",
+      "native_id": "gpt-5.5-2026-04-23",
+      "settings_key": "mantle_available_models",
+      "model": {
+        "name": "openai.gpt-5.5-2026-04-23",
+        "display_name": "AWS Bedrock - GPT-5.5 (2026-04-23)",
+        "max_tokens": 1050000,
+        "max_output_tokens": 128000,
+        "protocol": "responses",
+        "supports_tools": true,
+        "supports_images": true,
+        "supports_thinking": true
+      }
+    },
+    {
+      "discovery_id": "openai.gpt-5.4",
+      "native_id": "gpt-5.4",
+      "settings_key": "mantle_available_models",
+      "model": {
+        "name": "openai.gpt-5.4",
+        "display_name": "AWS Bedrock - GPT-5.4",
+        "max_tokens": 1050000,
+        "max_output_tokens": 128000,
+        "protocol": "responses",
+        "supports_tools": true,
+        "supports_images": true,
+        "supports_thinking": true
+      }
+    },
+    {
+      "discovery_id": "openai.gpt-5.4-2026-03-05",
+      "native_id": "gpt-5.4-2026-03-05",
+      "settings_key": "mantle_available_models",
+      "model": {
+        "name": "openai.gpt-5.4-2026-03-05",
+        "display_name": "AWS Bedrock - GPT-5.4 (2026-03-05)",
+        "max_tokens": 1050000,
+        "max_output_tokens": 128000,
+        "protocol": "responses",
+        "supports_tools": true,
+        "supports_images": true,
+        "supports_thinking": true
+      }
+    },
+    {
+      "discovery_id": "openai.gpt-oss-120b",
+      "native_id": "gpt-oss-120b",
+      "settings_key": "available_models",
+      "model": {
+        "name": "openai.gpt-oss-120b-1:0",
+        "display_name": "AWS Bedrock - GPT OSS 120B",
+        "max_tokens": 131072,
+        "max_output_tokens": 16384,
+        "supports_tools": true,
+        "supports_images": false
+      }
+    },
+    {
+      "discovery_id": "openai.gpt-oss-20b",
+      "native_id": "gpt-oss-20b",
+      "settings_key": "available_models",
+      "model": {
+        "name": "openai.gpt-oss-20b-1:0",
+        "display_name": "AWS Bedrock - GPT OSS 20B",
+        "max_tokens": 131072,
+        "max_output_tokens": 16384,
+        "supports_tools": true,
+        "supports_images": false
+      }
+    },
+    {
+      "discovery_id": "openai.gpt-oss-safeguard-120b",
+      "native_id": "gpt-oss-safeguard-120b",
+      "settings_key": "available_models",
+      "model": {
+        "name": "openai.gpt-oss-safeguard-120b",
+        "display_name": "AWS Bedrock - GPT OSS Safeguard 120B (moderation)",
+        "max_tokens": 131072,
+        "max_output_tokens": 16384,
+        "supports_tools": false,
+        "supports_images": false
+      }
+    },
+    {
+      "discovery_id": "openai.gpt-oss-safeguard-20b",
+      "native_id": "gpt-oss-safeguard-20b",
+      "settings_key": "available_models",
+      "model": {
+        "name": "openai.gpt-oss-safeguard-20b",
+        "display_name": "AWS Bedrock - GPT OSS Safeguard 20B (moderation)",
+        "max_tokens": 131072,
+        "max_output_tokens": 16384,
+        "supports_tools": false,
+        "supports_images": false
+      }
+    }
+  ]
+}

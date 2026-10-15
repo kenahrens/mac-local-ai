@@ -42,13 +42,35 @@ python3 editors/zed/configure-bedrock.py --profile my-bedrock-profile --region u
 python3 editors/zed/configure-bedrock.py --profile my-bedrock-profile --region us-east-1 --apply
 ```
 
-The default is **AWS Bedrock - GPT-5.6 Sol**. The helper adds a custom Mantle entry with that display name so both the favorite and active-model selector identify AWS. Its request ID remains `openai.gpt-5.6-sol`, and it uses the Responses protocol with the built-in model's context, output, and feature limits. Thinking is enabled at medium effort. The GPT-5.6 Terra and Luna options receive the same explicit AWS labels; other `--model` values select Zed's existing models without adding an alias. Choose a model available to your AWS account in the selected region. The helper sets the main agent, inline assistant, commit messages, thread summaries, compaction, and subagents to the same Bedrock model and adds it to favorites, replacing the equivalent unlabeled Bedrock favorite. Existing local providers, external agents, MCP connections, and permissions are preserved. Edit prediction has separate provider settings and is not changed by this helper.
+The default is **AWS Bedrock - GPT-6.1 Sol**, with medium reasoning. The helper installs the complete OpenAI catalog recorded in [`zed/bedrock-openai-models.json`](zed/bedrock-openai-models.json), including all four GPT-6 choices, older frontier models, dated snapshots, and OSS models. Every entry has an explicit AWS label in both favorites and the active-model selector. Override the default with `--model`, using either the catalog's native ID or full AWS model ID. The main agent, inline assistant, commit messages, thread summaries, compaction, and subagents use that default. Existing local providers, external agents, unrelated favorites, MCP connections, and permissions are preserved. Edit prediction has separate provider settings and is not changed.
+
+The catalog was checked against Bedrock's model-discovery endpoint in `us-east-1` on October 14, 2026. Model listing does not prove invocation permission or availability in another account or Region. Daybreak's restricted models were not returned and are not added. Safeguard entries are labeled for moderation and are not general-purpose coding agents. Review the catalog's IDs, limits, and capabilities when AWS adds models; installing a newer editor alone does not update this checked catalog.
+
+| Picker label (all prefixed `AWS Bedrock -`) | AWS request ID | Native route |
+|---|---|---|
+| GPT-6.1 Sol | `openai.gpt-6.1-sol` | Mantle Responses |
+| GPT-6 Astra | `openai.gpt-6-astra` | Mantle Responses |
+| GPT-6 Sol | `openai.gpt-6-sol` | Mantle Responses |
+| GPT-6 Luna | `openai.gpt-6-luna` | Mantle Responses |
+| GPT-5.6 Sol | `openai.gpt-5.6-sol` | Mantle Responses |
+| GPT-5.6 Terra | `openai.gpt-5.6-terra` | Mantle Responses |
+| GPT-5.6 Luna | `openai.gpt-5.6-luna` | Mantle Responses |
+| GPT-5.5 | `openai.gpt-5.5` | Mantle Responses |
+| GPT-5.5 (2026-04-23) | `openai.gpt-5.5-2026-04-23` | Mantle Responses |
+| GPT-5.4 | `openai.gpt-5.4` | Mantle Responses |
+| GPT-5.4 (2026-03-05) | `openai.gpt-5.4-2026-03-05` | Mantle Responses |
+| GPT OSS 120B | `openai.gpt-oss-120b-1:0` | Bedrock Converse |
+| GPT OSS 20B | `openai.gpt-oss-20b-1:0` | Bedrock Converse |
+| GPT OSS Safeguard 120B (moderation) | `openai.gpt-oss-safeguard-120b` | Bedrock Converse |
+| GPT OSS Safeguard 20B (moderation) | `openai.gpt-oss-safeguard-20b` | Bedrock Converse |
+
+Frontier entries use `mantle_available_models` with full AWS IDs and the Responses protocol. OSS entries use `available_models` and the Converse API because their Mantle base path differs from the frontier path used by Zed. See the [AWS OpenAI model cards](https://docs.aws.amazon.com/bedrock/latest/userguide/model-cards-openai.html) for endpoint-specific capabilities and limits.
 
 The helper merges into `~/.config/zed/settings.json` without copying credentials. Use `--settings PATH` to preview or apply to another file. It accepts strict JSON and refuses JSONC comments or trailing commas without changing the file. The MCP installers merge their own entries and preserve these model settings.
 
 Zed uses `amazon-bedrock` in agent model selections and `bedrock` under `language_models`; these are different settings keys. Custom Mantle selections use the full AWS request ID, such as `openai.gpt-5.6-sol`. Current MCP entries omit the retired `source` property. If Zed shows an outdated-settings warning for an older entry, use its migration action or remove that entry's obsolete `source` property.
 
-Zed reloads settings automatically. Open a new **Zed Agent** thread and choose the starred **AWS Bedrock - GPT-5.6 Sol** entry in the picker. The same label appears in the active-model selector; built-in entries may still appear separately under **Amazon Bedrock**. Existing OpenCode, Codex, Claude, and other external-agent threads keep their own provider configuration. Verify a short prompt in an empty folder before using customer files. An initial successful request does not verify renewal after SSO expiry.
+Zed reloads settings automatically. Open a new **Zed Agent** thread and choose the starred **AWS Bedrock - GPT-6.1 Sol** entry in the picker. The same label appears in the active-model selector; built-in entries may still appear separately under **Amazon Bedrock**. Existing OpenCode, Codex, Claude, and other external-agent threads keep their own provider configuration. Verify a short prompt in an empty folder before using customer files. An initial successful request does not verify renewal after SSO expiry.
 
 The AWS SDK renews temporary credentials while the underlying SSO login remains valid. When that login expires, run `aws sso login --profile my-bedrock-profile` again. If Zed retains an authentication error after successful login, retry the prompt and restart Zed if necessary; do not replace SSO with copied temporary credentials. See [Zed's Bedrock documentation](https://zed.dev/docs/ai/use-a-gateway#amazon-bedrock) and [AWS's SSO refresh lifecycle](https://docs.aws.amazon.com/sdkref/latest/guide/understanding-sso.html).
 
