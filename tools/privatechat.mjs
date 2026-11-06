@@ -15,7 +15,7 @@
 //
 // Usage:
 //   privatechat.mjs                      # interactive REPL, gemma-4
-//   privatechat.mjs -m gemma-4-e4b-it-4bit
+//   privatechat.mjs -m Qwen3.8-27B-4bit
 //   privatechat.mjs "one-shot prompt"    # answer once, print, exit
 //
 // Flags:
@@ -58,7 +58,7 @@ function help() {
 `privatechat — ephemeral, network-isolated chat with a local model.
 
   privatechat                       interactive REPL (gemma-4)
-  privatechat -m gemma-4-e4b-it-4bit
+  privatechat -m Qwen3.8-27B-4bit
   privatechat "summarize this idea"  one-shot, prints answer, exits
 
 Flags:
