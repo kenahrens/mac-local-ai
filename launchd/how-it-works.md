@@ -34,4 +34,4 @@ These bit me; they'll bite you too.
 
 ## Why local
 
-Cost and privacy. A digest that runs every morning calling a frontier API adds up, and it's reading your calendar and your metrics. Pointed at a local model ([`../omlx/`](../omlx/), [`../ds4/`](../ds4/)) it's free to run as often as you like and nothing leaves the machine.
+Cost and privacy. A digest that runs every morning calling a frontier API adds up, and it's reading your calendar and your metrics. Pointed at a local model ([`../omlx/`](../omlx/)) it's free to run as often as you like and nothing leaves the machine.
